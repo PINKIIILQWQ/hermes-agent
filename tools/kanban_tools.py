@@ -559,6 +559,14 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    total_input_tokens=args.get("input_tokens"),
+                    total_output_tokens=args.get("output_tokens"),
+                    total_cache_read_tokens=args.get("cache_read_tokens"),
+                    total_cache_write_tokens=args.get("cache_write_tokens"),
+                    total_reasoning_tokens=args.get("reasoning_tokens"),
+                    total_tokens=args.get("total_tokens"),
+                    estimated_cost_usd=args.get("estimated_cost_usd"),
+                    cost_status=args.get("cost_status"),
                 )
             except kb.HallucinatedCardsError as hall_err:
                 # Structured rejection — surface the phantom ids so the
@@ -1064,6 +1072,42 @@ KANBAN_COMPLETE_SCHEMA = {
                 ),
             },
             "board": _board_schema_prop(),
+            # Token accounting fields — auto-populated by the agent
+            # runtime with session-level aggregates when the worker calls
+            # kanban_complete. Workers do not set these manually; they
+            # exist so the agent can surface token consumption on the task.
+            "input_tokens": {
+                "type": "integer",
+                "description": "Auto-filled session input token count.",
+            },
+            "output_tokens": {
+                "type": "integer",
+                "description": "Auto-filled session output token count.",
+            },
+            "cache_read_tokens": {
+                "type": "integer",
+                "description": "Auto-filled session cache-read token count.",
+            },
+            "cache_write_tokens": {
+                "type": "integer",
+                "description": "Auto-filled session cache-write token count.",
+            },
+            "reasoning_tokens": {
+                "type": "integer",
+                "description": "Auto-filled session reasoning token count.",
+            },
+            "total_tokens": {
+                "type": "integer",
+                "description": "Auto-filled session total token count.",
+            },
+            "estimated_cost_usd": {
+                "type": "number",
+                "description": "Auto-filled estimated cost in USD for this session.",
+            },
+            "cost_status": {
+                "type": "string",
+                "description": "Auto-filled cost status: actual | estimated | included | unknown.",
+            },
         },
         "required": [],
     },
