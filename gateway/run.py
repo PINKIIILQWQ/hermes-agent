@@ -140,6 +140,50 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _kanban_token_notification_suffix(task) -> str:
+    """Build a compact token summary for kanban completion notifications.
+
+    Returns an empty string when the task has no token data, so callers
+    can append the result unconditionally with ``if suffix: msg += suffix``.
+    """
+    if task is None:
+        return ""
+    try:
+        total = task.total_tokens
+    except Exception:
+        return ""
+    if total is None:
+        return ""
+    inp = _fmt_notification_token_count(task.total_input_tokens)
+    out = _fmt_notification_token_count(task.total_output_tokens)
+    cost = ""
+    try:
+        if task.estimated_cost_usd is not None:
+            c = float(task.estimated_cost_usd)
+            if c >= 0.001:
+                cost = f" · ${c:.3f}"
+            elif c > 0:
+                cost = f" · ${c:.6f}"
+    except Exception:
+        pass
+    return f"{inp} in · {out} out{cost}"
+
+
+def _fmt_notification_token_count(val: Optional[int]) -> str:
+    """Format a token count for compact display: 1.2k, 456, etc."""
+    if val is None:
+        return "0"
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return "0"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return True for transient network errors safe to log + swallow.
 
@@ -5338,6 +5382,11 @@ class GatewayRunner:
                                 f"✔ {tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
                             )
+                            # Append compact token summary when the task
+                            # has token accounting data.
+                            token_suffix = _kanban_token_notification_suffix(task)
+                            if token_suffix:
+                                msg += f"  \u23b8 {token_suffix}"
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
