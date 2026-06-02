@@ -1768,12 +1768,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     # Token accounting columns for the ``task_runs`` table — same shapes,
     # populated by ``_end_run()`` and ``_synthesize_ended_run()``.
-    runs_col_names = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
-    for col_name, col_type in _TASK_TOKEN_COLUMNS:
-        if col_name not in runs_col_names:
-            _add_column_if_missing(
-                conn, "task_runs", col_name, f"{col_name} {col_type}"
-            )
+    # Guard: the table may not exist yet during concurrent migration tests.
+    runs_table_ok = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if runs_table_ok:
+        runs_col_names = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+        for col_name, col_type in _TASK_TOKEN_COLUMNS:
+            if col_name not in runs_col_names:
+                _add_column_if_missing(
+                    conn, "task_runs", col_name, f"{col_name} {col_type}"
+                )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
