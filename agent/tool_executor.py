@@ -107,6 +107,33 @@ def _tool_search_scoped_names(agent) -> frozenset:
     return names
 
 
+def _inject_kanban_token_args(agent, function_args: dict) -> None:
+    """Inject session-level token data into a kanban_complete tool call.
+
+    The agent accumulates ``session_*_tokens`` across every API turn in this
+    worker session.  When the model calls ``kanban_complete`` we merge those
+    aggregates into the tool arguments so the DB layer can persist them
+    alongside the run summary.  Workers never need to supply these manually.
+
+    Only fields with non-None values are injected so the tool schema's
+    ``"required": []`` leaves no constraint to violate.
+    """
+    _TOKEN_FIELDS = [
+        ("input_tokens",       "session_input_tokens"),
+        ("output_tokens",      "session_output_tokens"),
+        ("cache_read_tokens",  "session_cache_read_tokens"),
+        ("cache_write_tokens", "session_cache_write_tokens"),
+        ("reasoning_tokens",   "session_reasoning_tokens"),
+        ("total_tokens",       "session_total_tokens"),
+        ("estimated_cost_usd", "session_estimated_cost_usd"),
+        ("cost_status",        "session_cost_status"),
+    ]
+    for arg_key, attr_name in _TOKEN_FIELDS:
+        val = getattr(agent, attr_name, None)
+        if val is not None:
+            function_args[arg_key] = val
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -306,6 +333,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         try:
+            # Auto-inject session token data into kanban_complete so the
+            # worker does not have to track or supply these manually.
+            if function_name == "kanban_complete":
+                _inject_kanban_token_args(agent, function_args)
             try:
                 result = agent._invoke_tool(
                     function_name,
@@ -845,6 +876,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _spinner_result = None
+            # Auto-inject session token data into kanban_complete so the
+            # worker does not have to track or supply these manually.
+            # The agent's session_*_tokens accumulate across all turns of
+            # this worker session and represent the total consumption for
+            # this kanban run.
+            if function_name == "kanban_complete":
+                _inject_kanban_token_args(agent, function_args)
             try:
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
@@ -867,6 +905,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
         else:
+            # Auto-inject session token data into kanban_complete so the
+            # worker does not have to track or supply these manually.
+            if function_name == "kanban_complete":
+                _inject_kanban_token_args(agent, function_args)
             try:
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
