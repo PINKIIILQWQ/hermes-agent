@@ -459,6 +459,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_token.add_argument("--assignee",
                          default=None,
                          help="For 'ls' or 'stats': filter by assignee profile")
+    p_token.add_argument("--status",
+                         default=None,
+                         help="For 'ls': filter by task status (done, ready, running, ...)")
+    p_token.add_argument("--limit", type=int, default=None,
+                         help="For 'ls': max number of tasks to show")
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -1791,11 +1796,14 @@ def _parse_since(value: Optional[str]) -> Optional[int]:
 def _cmd_token_ls(args: argparse.Namespace) -> int:
     """List all tasks with token data on the current board."""
     assignee = getattr(args, "assignee", None) or None
+    status = getattr(args, "status", None) or None
+    limit = getattr(args, "limit", None) or None
     show_json = getattr(args, "json", False)
 
     with kb.connect_closing() as conn:
-        # Fetch all non-archived tasks, ordered by completion time
-        tasks = kb.list_tasks(conn, assignee=assignee, include_archived=False)
+        # Fetch tasks with optional filters
+        tasks = kb.list_tasks(conn, assignee=assignee, status=status,
+                              include_archived=False, limit=limit)
         # Filter to those with token data
         with_token = [t for t in tasks if t.total_tokens is not None]
 
@@ -3047,6 +3055,9 @@ _SLASH_KANBAN_HELP = """\
 Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
   `show <id>`           Task details + comments + events
+  `token <query>`       Search a task by name/ID and show token usage
+  `token ls`            List all tasks with token data
+  `token stats`         Aggregate token statistics (--since, --assignee)
   `stats`               Per-status / per-assignee counts
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
