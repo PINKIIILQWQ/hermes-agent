@@ -464,6 +464,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                          help="For 'ls': filter by task status (done, ready, running, ...)")
     p_token.add_argument("--limit", type=int, default=None,
                          help="For 'ls': max number of tasks to show")
+    p_token.add_argument("--granularity",
+                         choices=("day", "month", "year"), default=None,
+                         help="For 'stats': group by time period (day, month, year)")
+    p_token.add_argument("--sort",
+                         choices=("tokens", "cost"), default=None,
+                         help="For 'ls' or 'stats --top': sort by token count or cost")
+    p_token.add_argument("--top", type=int, default=None,
+                         help="For 'stats': show top N most expensive tasks")
+    p_token.add_argument("--board",
+                         default=None,
+                         help="Board slug to query, or 'all' for all boards")
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -1793,23 +1804,40 @@ def _parse_since(value: Optional[str]) -> Optional[int]:
     return None
 
 
+def _bar_chart_inline(values: list[int], max_width: int = 15) -> list[str]:
+    """Create simple horizontal bar chart strings from values.
+
+    Matches the style of ``insights.py:_bar_chart``.  Returns one string
+    per input value (e.g. ``"███████████"``).  Empty strings for zero values.
+    """
+    peak = max(values) if values else 1
+    if peak == 0:
+        return ["" for _ in values]
+    return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
+
+
 def _cmd_token_ls(args: argparse.Namespace) -> int:
     """List all tasks with token data on the current board."""
     assignee = getattr(args, "assignee", None) or None
     status = getattr(args, "status", None) or None
     limit = getattr(args, "limit", None) or None
     show_json = getattr(args, "json", False)
+    sort_by = getattr(args, "sort", None)
 
     with kb.connect_closing() as conn:
-        # Fetch tasks with optional filters
         tasks = kb.list_tasks(conn, assignee=assignee, status=status,
                               include_archived=False, limit=limit)
-        # Filter to those with token data
         with_token = [t for t in tasks if t.total_tokens is not None]
 
         if not with_token:
             print("No tasks with token data found.")
             return 0
+
+        # Sort if requested
+        if sort_by == "tokens":
+            with_token.sort(key=lambda t: t.total_tokens or 0, reverse=True)
+        elif sort_by == "cost":
+            with_token.sort(key=lambda t: t.estimated_cost_usd or 0.0, reverse=True)
 
         if show_json:
             data = []
@@ -1849,89 +1877,172 @@ def _cmd_token_stats(args: argparse.Namespace) -> int:
     since_str = getattr(args, "since", None)
     since_ts = _parse_since(since_str)
     show_json = getattr(args, "json", False)
+    granularity = getattr(args, "granularity", None)
+    top_n = getattr(args, "top", None)
+    board = getattr(args, "board", None) or None
 
-    with kb.connect_closing() as conn:
-        tasks = kb.list_tasks(conn, assignee=assignee, status="done", include_archived=False)
-        # Filter by time window
-        if since_ts is not None:
-            tasks = [t for t in tasks if t.completed_at is not None and t.completed_at >= since_ts]
-        # Only tasks with token data
-        with_token = [t for t in tasks if t.total_tokens is not None]
+    # Collect tasks from one or all boards
+    boards_to_query: list[str | None] = [None]  # None = current board
+    if board == "all":
+        try:
+            boards_to_query = [None] + [
+                b.slug for b in kb.list_boards()
+                if b.slug != kb.get_current_board()
+            ]
+        except Exception:
+            boards_to_query = [None]
 
-        if not with_token:
-            print("No token data found for the given filters.")
-            return 0
+    with_token: list = []
+    for _board_slug in boards_to_query:
+        try:
+            conn_ctx = kb.connect_closing()
+        except Exception:
+            continue
+        with conn_ctx as conn:
+            fetched = kb.list_tasks(conn, assignee=assignee, status="done",
+                                    include_archived=False)
+            if since_ts is not None:
+                fetched = [t for t in fetched
+                           if t.completed_at is not None and t.completed_at >= since_ts]
+            with_token.extend(t for t in fetched if t.total_tokens is not None)
 
-        total_in = sum(t.total_input_tokens or 0 for t in with_token)
-        total_out = sum(t.total_output_tokens or 0 for t in with_token)
-        total_cache = sum(t.total_cache_read_tokens or 0 for t in with_token)
-        total_all = sum(t.total_tokens or 0 for t in with_token)
-        total_cost = sum(t.estimated_cost_usd or 0.0 for t in with_token)
-        count = len(with_token)
-        avg_total = total_all // count if count else 0
+    if not with_token:
+        print("No token data found for the given filters.")
+        return 0
 
-        # Per-assignee breakdown
-        by_assignee: dict[str, dict] = {}
+    total_in = sum(t.total_input_tokens or 0 for t in with_token)
+    total_out = sum(t.total_output_tokens or 0 for t in with_token)
+    total_cache = sum(t.total_cache_read_tokens or 0 for t in with_token)
+    total_all = sum(t.total_tokens or 0 for t in with_token)
+    total_cost = sum(t.estimated_cost_usd or 0.0 for t in with_token)
+    count = len(with_token)
+    avg_total = total_all // count if count else 0
+
+    # Per-assignee breakdown
+    by_assignee: dict[str, dict] = {}
+    for t in with_token:
+        a = t.assignee or "(unassigned)"
+        if a not in by_assignee:
+            by_assignee[a] = {"tasks": 0, "input": 0, "output": 0,
+                              "cache": 0, "total": 0, "cost": 0.0}
+        by_assignee[a]["tasks"] += 1
+        by_assignee[a]["input"] += t.total_input_tokens or 0
+        by_assignee[a]["output"] += t.total_output_tokens or 0
+        by_assignee[a]["cache"] += t.total_cache_read_tokens or 0
+        by_assignee[a]["total"] += t.total_tokens or 0
+        by_assignee[a]["cost"] += t.estimated_cost_usd or 0.0
+
+    # Time-bucket aggregation for --granularity
+    by_time: dict[str, dict] = {}
+    if granularity:
+        from datetime import datetime
         for t in with_token:
-            a = t.assignee or "(unassigned)"
-            if a not in by_assignee:
-                by_assignee[a] = {"tasks": 0, "input": 0, "output": 0,
-                                  "cache": 0, "total": 0, "cost": 0.0}
-            by_assignee[a]["tasks"] += 1
-            by_assignee[a]["input"] += t.total_input_tokens or 0
-            by_assignee[a]["output"] += t.total_output_tokens or 0
-            by_assignee[a]["cache"] += t.total_cache_read_tokens or 0
-            by_assignee[a]["total"] += t.total_tokens or 0
-            by_assignee[a]["cost"] += t.estimated_cost_usd or 0.0
+            if t.completed_at is None:
+                continue
+            dt = datetime.fromtimestamp(t.completed_at)
+            if granularity == "day":
+                key = dt.strftime("%Y-%m-%d")
+            elif granularity == "month":
+                key = dt.strftime("%Y-%m")
+            elif granularity == "year":
+                key = dt.strftime("%Y")
+            else:
+                continue
+            if key not in by_time:
+                by_time[key] = {"tasks": 0, "input": 0, "output": 0,
+                                "cache": 0, "total": 0, "cost": 0.0}
+            by_time[key]["tasks"] += 1
+            by_time[key]["input"] += t.total_input_tokens or 0
+            by_time[key]["output"] += t.total_output_tokens or 0
+            by_time[key]["cache"] += t.total_cache_read_tokens or 0
+            by_time[key]["total"] += t.total_tokens or 0
+            by_time[key]["cost"] += t.estimated_cost_usd or 0.0
 
-        if show_json:
-            data = {
-                "task_count": count,
-                "total_tokens": total_all,
-                "total_input_tokens": total_in,
-                "total_output_tokens": total_out,
-                "total_cache_read_tokens": total_cache,
-                "total_cost_usd": round(total_cost, 6),
-                "average_tokens_per_task": avg_total,
-                "by_assignee": {
-                    a: {
-                        "task_count": s["tasks"],
-                        "input_tokens": s["input"],
-                        "output_tokens": s["output"],
-                        "cache_read_tokens": s["cache"],
-                        "total_tokens": s["total"],
-                        "cost_usd": round(s["cost"], 6),
-                    }
-                    for a, s in sorted(by_assignee.items())
-                },
-            }
-            if since_str:
-                data["since"] = since_str
-            print(json.dumps(data, indent=2, ensure_ascii=False))
-            return 0
+    if show_json:
+        data: dict = {
+            "task_count": count,
+            "total_tokens": total_all,
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+            "total_cache_read_tokens": total_cache,
+            "total_cost_usd": round(total_cost, 6),
+            "average_tokens_per_task": avg_total,
+            "by_assignee": {
+                a: {
+                    "task_count": s["tasks"],
+                    "input_tokens": s["input"],
+                    "output_tokens": s["output"],
+                    "cache_read_tokens": s["cache"],
+                    "total_tokens": s["total"],
+                    "cost_usd": round(s["cost"], 6),
+                }
+                for a, s in sorted(by_assignee.items())
+            },
+        }
+        if since_str:
+            data["since"] = since_str
+        if by_time:
+            data["by_time"] = by_time
+        if top_n:
+            sorted_tasks = sorted(with_token,
+                                  key=lambda t: t.total_tokens or 0, reverse=True)
+            data["top_tasks"] = [
+                {"task_id": t.id, "title": t.title, "total_tokens": t.total_tokens,
+                 "estimated_cost_usd": t.estimated_cost_usd}
+                for t in sorted_tasks[:top_n]
+            ]
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return 0
 
-        # Text output
-        since_label = f" (since {since_str})" if since_str else ""
-        print(f"📊 Kanban Token Statistics{since_label}")
-        print(f"   Tasks with data: {count}")
+    # Text output
+    since_label = f" (since {since_str})" if since_str else ""
+    board_label = f" ({board})" if board else ""
+    print(f"📊 Kanban Token Statistics{since_label}{board_label}")
+    print(f"   Tasks with data: {count}")
+    print()
+
+    # Time bucket section
+    if by_time:
+        print(f"   📅 By {granularity}")
+        sorted_keys = sorted(by_time.keys())
+        vals = [by_time[k]["total"] for k in sorted_keys]
+        bars = _bar_chart_inline(vals, max_width=15)
+        print(f"   {'':>12} {'tasks':>6} {'tokens':>12} {'bar':<17}")
+        for i, k in enumerate(sorted_keys):
+            b = by_time[k]
+            print(f"   {k:>12} {b['tasks']:>6} {_fmt_num(b['total']):>12} {bars[i]:<17}")
         print()
-        print(f"   {'':>20} {'total':>12} {'input':>12} {'output':>12} {'cache':>12} {'hitrate':>9}")
-        print(f"   {'─'*20} {'─'*12} {'─'*12} {'─'*12} {'─'*12} {'─'*9}")
-        all_hit = _cache_hit_rate(total_cache, total_in)
-        print(f"   {'ALL':>20} {_fmt_num(total_all):>12} {_fmt_num(total_in):>12} "
-              f"{_fmt_num(total_out):>12} {_fmt_num(total_cache):>12} {all_hit:>9}")
-        print(f"   {'':>20} {'':>12} {'':>12} {'':>12} {'':>12} {'':>9}")
-        print(f"   {'Per assignee:':>20}")
-        for a in sorted(by_assignee.keys()):
-            s = by_assignee[a]
-            label = a[:18]
-            hit = _cache_hit_rate(s["cache"], s["input"])
-            print(f"   {label:>20} {_fmt_num(s['total']):>12} {_fmt_num(s['input']):>12} "
-                  f"{_fmt_num(s['output']):>12} {_fmt_num(s['cache']):>12} {hit:>9}")
+
+    # Overview table
+    print(f"   {'':>20} {'total':>12} {'input':>12} {'output':>12} {'cache':>12} {'hitrate':>9}")
+    print(f"   {'─'*20} {'─'*12} {'─'*12} {'─'*12} {'─'*12} {'─'*9}")
+    all_hit = _cache_hit_rate(total_cache, total_in)
+    print(f"   {'ALL':>20} {_fmt_num(total_all):>12} {_fmt_num(total_in):>12} "
+          f"{_fmt_num(total_out):>12} {_fmt_num(total_cache):>12} {all_hit:>9}")
+    print(f"   {'':>20} {'':>12} {'':>12} {'':>12} {'':>12} {'':>9}")
+    print(f"   {'Per assignee:':>20}")
+    for a in sorted(by_assignee.keys()):
+        s = by_assignee[a]
+        label = a[:18]
+        hit = _cache_hit_rate(s["cache"], s["input"])
+        print(f"   {label:>20} {_fmt_num(s['total']):>12} {_fmt_num(s['input']):>12} "
+              f"{_fmt_num(s['output']):>12} {_fmt_num(s['cache']):>12} {hit:>9}")
+    print()
+    if total_cost > 0:
+        print(f"   Estimated cost: ${total_cost:.6f}")
+    print(f"   Average tokens/task: {_fmt_num(avg_total)}")
+
+    # Top N most expensive tasks
+    if top_n:
+        sorted_tasks = sorted(with_token,
+                              key=lambda t: t.total_tokens or 0, reverse=True)
+        top_tasks = sorted_tasks[:top_n]
         print()
-        if total_cost > 0:
-            print(f"   Estimated cost: ${total_cost:.6f}")
-        print(f"   Average tokens/task: {_fmt_num(avg_total)}")
+        print(f"   🏆 Top {top_n} by tokens")
+        print(f"   {'':>10} {'tokens':>12} {'title'}")
+        for i, t in enumerate(top_tasks, 1):
+            title = t.title[:50]
+            print(f"   #{i:<8} {_fmt_num(t.total_tokens or 0):>12}  {title}")
     return 0
 
 
