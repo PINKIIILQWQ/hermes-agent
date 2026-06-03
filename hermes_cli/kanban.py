@@ -81,6 +81,19 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     }
 
 
+def _task_token_dict(t: kb.Task) -> dict[str, Any]:
+    """Return a dictionary of token accounting fields, omitting None values."""
+    d: dict[str, Any] = {}
+    for attr in ("total_input_tokens", "total_output_tokens",
+                 "total_cache_read_tokens", "total_cache_write_tokens",
+                 "total_reasoning_tokens", "total_tokens",
+                 "estimated_cost_usd", "cost_status"):
+        val = getattr(t, attr, None)
+        if val is not None:
+            d[attr] = val
+    return d
+
+
 def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     st = getattr(args, "state_type", None)
     sn = getattr(args, "state_name", None)
@@ -1486,6 +1499,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
+            "token_usage": _task_token_dict(task),
             "comments": [
                 {"author": c.author, "body": c.body, "created_at": c.created_at}
                 for c in comments
@@ -1579,6 +1593,19 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  started:   {_fmt_ts(task.started_at)}")
     if task.completed_at:
         print(f"  completed: {_fmt_ts(task.completed_at)}")
+    # Token accounting — only show when data exists.
+    if task.total_tokens is not None:
+        _parts = [f"in: {task.total_input_tokens or 0:,}",
+                   f"out: {task.total_output_tokens or 0:,}"]
+        if task.total_cache_read_tokens:
+            _parts.append(f"cache: {task.total_cache_read_tokens:,}")
+        if task.total_reasoning_tokens:
+            _parts.append(f"reasoning: {task.total_reasoning_tokens:,}")
+        _line = f"  tokens:    {task.total_tokens:,} ({', '.join(_parts)})"
+        if task.estimated_cost_usd is not None:
+            _status = f" ({task.cost_status})" if task.cost_status else ""
+            _line += f" — ${task.estimated_cost_usd:.6f}{_status}"
+        print(_line)
     if parents:
         print(f"  parents:   {', '.join(parents)}")
     if children:
