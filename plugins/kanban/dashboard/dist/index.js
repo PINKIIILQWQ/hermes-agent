@@ -3083,8 +3083,9 @@
       },
         h("div", { className: "hermes-kanban-drawer-head" },
           h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
-          h("button", {
-            type: "button",
+          h(Button, {
+            size: "sm",
+            variant: "outline",
             className: cn(
               "hermes-kanban-drawer-id-copy",
               drawerIdCopied ? "hermes-kanban-drawer-id-copy--copied" : "",

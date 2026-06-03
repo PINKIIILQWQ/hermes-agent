@@ -1628,6 +1628,7 @@
   border: 1px solid transparent;
   border-radius: 4px;
   padding: 0.05rem 0.3rem;
+  font-size: 0.65rem;
   transition: border-color 0.12s ease, color 0.15s ease, background-color 0.15s ease;
   user-select: none;
 }
@@ -1639,24 +1640,9 @@
 }
 
 /* Task drawer head — copy button sitting between the task-id label
-   and the × close button. Mirrors the close button's appearance
-   (transparent bg, muted foreground, hover → foreground) so the
-   header row stays visually uniform. On click the text flips to
-   "已复制" in a success colour for 2 s. */
-.hermes-kanban-drawer-id-copy {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  color: var(--color-muted-foreground);
-  font-size: 0.7rem;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 0.35rem;
-  transition: color 0.15s ease;
-}
-.hermes-kanban-drawer-id-copy:hover {
-  color: var(--color-foreground);
-}
+   and the × close button. Uses the SDK's Button component (outline
+   variant, size sm) so it matches the refresh/archive button style.
+   The --copied variant flips text to a success colour for 2 s. */
 .hermes-kanban-drawer-id-copy--copied {
   color: var(--color-success, #4ade80);
 }
