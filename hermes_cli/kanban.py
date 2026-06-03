@@ -1813,13 +1813,13 @@ def _cmd_token_ls(args: argparse.Namespace) -> int:
             return 0
 
         # Text output: header + per-task line
-        print(f"{'ID':<22} {'STATUS':<10} {'TOKENS':<12} {'HITRATE':<9} {'TITLE'}")
+        print(f"{'ID':<22} {'TITLE':<46} {'TOKENS':<12} {'HITRATE':<9}")
         print("-" * 90)
         for t in with_token:
             tok_str = _fmt_num(t.total_tokens)
             hit = _cache_hit_rate(t.total_cache_read_tokens, t.total_input_tokens)
-            title = t.title[:50]
-            print(f"{t.id:<22} {t.status:<10} {tok_str:<12} {hit:<9} {title}")
+            title = t.title[:44]
+            print(f"{t.id:<22} {title:<46} {tok_str:<12} {hit:<9}")
 
         # Summary line
         total_in = sum(t.total_input_tokens or 0 for t in with_token)
@@ -1831,7 +1831,7 @@ def _cmd_token_ls(args: argparse.Namespace) -> int:
         parts = [f"in: {_fmt_num(total_in)}", f"out: {_fmt_num(total_out)}"]
         if total_cache:
             parts.append(f"cache: {_fmt_num(total_cache)}")
-        print(f"{'TOTAL':<22} {'':<10} {_fmt_num(total_all):<12} {total_hit:<9} ({', '.join(parts)})")
+        print(f"{'TOTAL':<22} {'':<46} {_fmt_num(total_all):<12} {total_hit:<9} ({', '.join(parts)})")
     return 0
 
 
