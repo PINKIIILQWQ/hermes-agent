@@ -1581,3 +1581,82 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ----------------------------------------------------------------- */
+/* Copy button — one-click clipboard for task IDs, task drawer IDs,
+   attention rows, and anything else that benefits from quick copy.
+
+   The base button is subdued (muted foreground, transparent bg).
+   On hover it gains a subtle background ring. The --copied variant
+   flips to a success colour for 2 s, matching the same feedback
+   pattern used by the Diagnostics Section's cli_hint handler.
+   ----------------------------------------------------------------- */
+.hermes-kanban-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  color: var(--color-muted-foreground);
+  font-size: 0.6rem;
+  padding: 0.05rem 0.2rem;
+  margin: 0;
+  border-radius: 3px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  line-height: 1;
+}
+.hermes-kanban-copy-btn:hover {
+  background: color-mix(in srgb, var(--color-ring) 12%, transparent);
+  color: var(--color-foreground);
+}
+.hermes-kanban-copy-btn--copied {
+  color: var(--color-success, #4ade80);
+}
+
+/* Wrapper — clickable task ID with inline "Copy ID" text.
+   No border by default; on hover the border lights up (matching the
+   card's own hover highlight). On click the whole element flips to a
+   subtle success colour and the "Copy ID" label briefly says "Copied".
+   Keyboard‑accessible via role="button" + tabIndex=0 + onKeyDown. */
+.hermes-kanban-card-id-clickable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  color: var(--color-muted-foreground);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  transition: border-color 0.12s ease, color 0.15s ease, background-color 0.15s ease;
+  user-select: none;
+}
+.hermes-kanban-card-id-clickable:hover {
+  border-color: color-mix(in srgb, var(--color-ring) 30%, transparent);
+}
+.hermes-kanban-card-id-clickable--copied {
+  color: var(--color-success, #4ade80);
+}
+
+/* Task drawer head — copy button sitting between the task-id label
+   and the × close button. Mirrors the close button's appearance
+   (transparent bg, muted foreground, hover → foreground) so the
+   header row stays visually uniform. On click the text flips to
+   "已复制" in a success colour for 2 s. */
+.hermes-kanban-drawer-id-copy {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.35rem;
+  transition: color 0.15s ease;
+}
+.hermes-kanban-drawer-id-copy:hover {
+  color: var(--color-foreground);
+}
+.hermes-kanban-drawer-id-copy--copied {
+  color: var(--color-success, #4ade80);
+}

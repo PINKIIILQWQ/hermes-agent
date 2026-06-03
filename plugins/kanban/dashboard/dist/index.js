@@ -262,6 +262,45 @@
   }
 
   // -------------------------------------------------------------------------
+  // CopyButton — reusable clipboard copy component.
+  //
+  // Accepts ``text`` (required), ``label`` (default "📋"), ``title`` (tooltip).
+  // Shows "Copied" feedback for 2 seconds after successful copy. Falls back to
+  // window.prompt when navigator.clipboard is unavailable (non-HTTPS, etc.).
+  // Follows the same pattern as DiagnosticActionButton's cli_hint handler.
+  // -------------------------------------------------------------------------
+  function CopyButton(props) {
+    const [copied, setCopied] = useState(false);
+    const text = props.text;
+    if (!text) return null;
+    const label = props.label || "\uD83D\uDCCB";
+    const handleClick = function (e) {
+      if (e) e.stopPropagation();
+      const fallback = function () { window.prompt("Copy:", text); };
+      try {
+        const p = navigator.clipboard && navigator.clipboard.writeText(text);
+        if (p && p.then) {
+          p.then(function () {
+            setCopied(true);
+            setTimeout(function () { setCopied(false); }, 2000);
+          }).catch(fallback);
+        } else {
+          fallback();
+        }
+      } catch (_e) { fallback(); }
+    };
+    return h("button", {
+      className: cn(
+        "hermes-kanban-copy-btn",
+        copied ? "hermes-kanban-copy-btn--copied" : "",
+      ),
+      title: props.title || "Copy",
+      onClick: handleClick,
+      type: "button",
+    }, copied ? "Copied" : label);
+  }
+
+  // -------------------------------------------------------------------------
   // Minimal safe markdown renderer.
   //
   // Recognises a small subset (headings, bold, italic, inline code, fenced
@@ -1143,6 +1182,7 @@
                 h("span", { className: "hermes-kanban-attention-row-sev" },
                   sev === "critical" ? "!!!" : sev === "error" ? "!!" : "⚠"),
                 h("span", { className: "hermes-kanban-attention-row-id" }, task.id),
+                h(CopyButton, { text: task.id, title: "Copy task ID" }),
                 h("span", { className: "hermes-kanban-attention-row-title" },
                   task.title || tx(t, "untitled", "(untitled)")),
                 h("span", { className: "hermes-kanban-attention-row-meta" },
@@ -2427,6 +2467,7 @@
     const { t: i18n } = useI18n();
     const t = props.task;
     const cardRef = useRef(null);
+    const [idCopied, setIdCopied] = useState(false);
 
     useEffect(function () {
       return attachTouchDrag(cardRef.current, t.id);
@@ -2512,8 +2553,47 @@
                 "aria-label": `Select task ${t.id}`,
               }),
             ),
-            h("span", { className: "hermes-kanban-card-id",
-                        title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
+            h("span", {
+              className: cn(
+                "hermes-kanban-card-id-clickable",
+                idCopied ? "hermes-kanban-card-id-clickable--copied" : "",
+              ),
+              onClick: function (e) {
+                e.stopPropagation();
+                var fallback = function () { window.prompt("Copy:", t.id); };
+                try {
+                  var p = navigator.clipboard && navigator.clipboard.writeText(t.id);
+                  if (p && p.then) {
+                    p.then(function () {
+                      setIdCopied(true);
+                      setTimeout(function () { setIdCopied(false); }, 2000);
+                    }).catch(fallback);
+                  } else {
+                    fallback();
+                  }
+                } catch (_e) { fallback(); }
+              },
+              title: "Click to copy task ID",
+              role: "button",
+              tabIndex: 0,
+              onKeyDown: function (e) {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.stopPropagation();
+                  /* trigger the same copy logic */
+                  var fallback = function () { window.prompt("Copy:", t.id); };
+                  try {
+                    var p = navigator.clipboard && navigator.clipboard.writeText(t.id);
+                    if (p && p.then) {
+                      p.then(function () { setIdCopied(true); setTimeout(function () { setIdCopied(false); }, 2000); }).catch(fallback);
+                    } else { fallback(); }
+                  } catch (_e) { fallback(); }
+                }
+              },
+            },
+              h("span", { className: "hermes-kanban-card-id" }, t.id),
+              " ",
+              idCopied ? "Copied" : "Copy ID",
+            ),
             t.warnings && t.warnings.count > 0
               ? h("span", {
                   className: cn(
@@ -2782,6 +2862,7 @@
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
+    const [drawerIdCopied, setDrawerIdCopied] = useState(false);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
     // us whether this task is currently subscribed via that platform's home.
@@ -3004,6 +3085,29 @@
           h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
           h("button", {
             type: "button",
+            className: cn(
+              "hermes-kanban-drawer-id-copy",
+              drawerIdCopied ? "hermes-kanban-drawer-id-copy--copied" : "",
+            ),
+            onClick: function (e) {
+              e.stopPropagation();
+              var fallback = function () { window.prompt("Copy:", props.taskId); };
+              try {
+                var p = navigator.clipboard && navigator.clipboard.writeText(props.taskId);
+                if (p && p.then) {
+                  p.then(function () {
+                    setDrawerIdCopied(true);
+                    setTimeout(function () { setDrawerIdCopied(false); }, 2000);
+                  }).catch(fallback);
+                } else {
+                  fallback();
+                }
+              } catch (_e) { fallback(); }
+            },
+            title: "Copy task ID to clipboard",
+          }, drawerIdCopied ? "已复制" : "复制任务ID"),
+          h("button", {
+            type: "button",
             onClick: props.onClose,
             className: "hermes-kanban-drawer-close",
             title: tx(t, "close", "Close (Esc)"),
@@ -3206,6 +3310,10 @@
             : "on",
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
+        h(MetaRow, {
+          label: tx(i18n, "taskId", "Task ID"),
+          value: t.id,
+        }),
       ),
       h(StatusActions, {
         task: t,
@@ -3445,6 +3553,7 @@
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, props.label),
       h("span", { className: "hermes-kanban-meta-value" }, props.value),
+      props.trailing || null,
     );
   }
 

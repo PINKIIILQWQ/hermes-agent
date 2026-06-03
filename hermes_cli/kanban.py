@@ -435,6 +435,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_show.add_argument("task_id")
     p_show.add_argument("--json", action="store_true")
     p_show.add_argument(
+        "--clip", action="store_true",
+        help="Copy the task ID to the system clipboard (pbcopy/xclip/clip)",
+    )
+    p_show.add_argument(
         "--state-type",
         choices=("status", "outcome"),
         default=None,
@@ -1682,6 +1686,31 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
                 print(f"        ! {r.error.splitlines()[0][:160]}")
+    # --clip: copy task ID to system clipboard
+    if getattr(args, "clip", False):
+        import subprocess
+        tid = task.id
+        try:
+            if sys.platform == "darwin":
+                proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+            elif sys.platform.startswith("win"):
+                proc = subprocess.Popen(["clip"], stdin=subprocess.PIPE)
+            else:
+                proc = subprocess.Popen(["xclip", "-selection", "clipboard"], stdin=subprocess.PIPE)
+            proc.communicate(tid.encode())
+            if proc.returncode == 0:
+                print(f"  clipboard: ✓ {tid}")
+            else:
+                print(f"  clipboard: ! failed (clip tool exit code {proc.returncode})", file=sys.stderr)
+        except FileNotFoundError:
+            print(
+                "  clipboard: ! tool not found. "
+                "Install xclip (Linux: 'sudo apt install xclip') "
+                "or use pbcopy (macOS).",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(f"  clipboard: ! {e}", file=sys.stderr)
     return 0
 
 
