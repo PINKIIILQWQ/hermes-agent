@@ -466,13 +466,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                          help="For 'ls': max number of tasks to show")
     p_token.add_argument("--granularity",
                          choices=("day", "month", "year"), default=None,
-                         help="For 'stats': group by time period (day, month, year)")
+                         help="For 'stats': group by time period (day, month, year).  Recommended with --since")
     p_token.add_argument("--sort",
                          choices=("tokens", "cost"), default=None,
                          help="For 'ls' or 'stats --top': sort by token count or cost")
     p_token.add_argument("--top", type=int, default=None,
                          help="For 'stats': show top N most expensive tasks")
-    p_token.add_argument("--board",
+    p_token.add_argument("--scope",
                          default=None,
                          help="Board slug to query, or 'all' for all boards")
 
@@ -1816,6 +1816,21 @@ def _bar_chart_inline(values: list[int], max_width: int = 15) -> list[str]:
     return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
 
 
+def _accumulate_stats(t, acc: dict) -> None:
+    """Accumulate a single task's token data into a stats bucket dict.
+
+    Mutates ``acc`` in place by adding the task's input, output, cache,
+    total, reasoning tokens and estimated cost.  Buckets that have not
+    been seen before must be pre-initialised with zero values.
+    """
+    acc["tasks"] += 1
+    acc["input"] += t.total_input_tokens or 0
+    acc["output"] += t.total_output_tokens or 0
+    acc["cache"] += t.total_cache_read_tokens or 0
+    acc["total"] += t.total_tokens or 0
+    acc["cost"] += t.estimated_cost_usd or 0.0
+
+
 def _cmd_token_ls(args: argparse.Namespace) -> int:
     """List all tasks with token data on the current board."""
     assignee = getattr(args, "assignee", None) or None
@@ -1879,23 +1894,23 @@ def _cmd_token_stats(args: argparse.Namespace) -> int:
     show_json = getattr(args, "json", False)
     granularity = getattr(args, "granularity", None)
     top_n = getattr(args, "top", None)
-    board = getattr(args, "board", None) or None
+    scope = getattr(args, "scope", None) or None
 
     # Collect tasks from one or all boards
     boards_to_query: list[str | None] = [None]  # None = current board
-    if board == "all":
+    if scope == "all":
         try:
             boards_to_query = [None] + [
-                b.slug for b in kb.list_boards()
-                if b.slug != kb.get_current_board()
+                b["slug"] for b in kb.list_boards()
+                if b["slug"] != kb.get_current_board()
             ]
         except Exception:
             boards_to_query = [None]
 
     with_token: list = []
-    for _board_slug in boards_to_query:
+    for slug in boards_to_query:
         try:
-            conn_ctx = kb.connect_closing()
+            conn_ctx = kb.connect_closing(board=slug)
         except Exception:
             continue
         with conn_ctx as conn:
@@ -1925,12 +1940,7 @@ def _cmd_token_stats(args: argparse.Namespace) -> int:
         if a not in by_assignee:
             by_assignee[a] = {"tasks": 0, "input": 0, "output": 0,
                               "cache": 0, "total": 0, "cost": 0.0}
-        by_assignee[a]["tasks"] += 1
-        by_assignee[a]["input"] += t.total_input_tokens or 0
-        by_assignee[a]["output"] += t.total_output_tokens or 0
-        by_assignee[a]["cache"] += t.total_cache_read_tokens or 0
-        by_assignee[a]["total"] += t.total_tokens or 0
-        by_assignee[a]["cost"] += t.estimated_cost_usd or 0.0
+        _accumulate_stats(t, by_assignee[a])
 
     # Time-bucket aggregation for --granularity
     by_time: dict[str, dict] = {}
@@ -1951,12 +1961,7 @@ def _cmd_token_stats(args: argparse.Namespace) -> int:
             if key not in by_time:
                 by_time[key] = {"tasks": 0, "input": 0, "output": 0,
                                 "cache": 0, "total": 0, "cost": 0.0}
-            by_time[key]["tasks"] += 1
-            by_time[key]["input"] += t.total_input_tokens or 0
-            by_time[key]["output"] += t.total_output_tokens or 0
-            by_time[key]["cache"] += t.total_cache_read_tokens or 0
-            by_time[key]["total"] += t.total_tokens or 0
-            by_time[key]["cost"] += t.estimated_cost_usd or 0.0
+            _accumulate_stats(t, by_time[key])
 
     if show_json:
         data: dict = {
@@ -1996,7 +2001,7 @@ def _cmd_token_stats(args: argparse.Namespace) -> int:
 
     # Text output
     since_label = f" (since {since_str})" if since_str else ""
-    board_label = f" ({board})" if board else ""
+    board_label = f" (scope: {scope})" if scope else ""
     print(f"📊 Kanban Token Statistics{since_label}{board_label}")
     print(f"   Tasks with data: {count}")
     print()
