@@ -447,6 +447,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="With --state-type: keep runs whose column equals this value",
     )
 
+    # --- token ---
+    p_token = sub.add_parser("token", help="Show token usage for a task by name or ID")
+    p_token.add_argument("query", nargs="?", default=None,
+                         help="Task ID (t_xxx) or title substring to search")
+    p_token.add_argument("--json", action="store_true",
+                         help="Emit token data as JSON")
+
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
@@ -949,6 +956,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
+        "token":    _cmd_token,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -1653,6 +1661,79 @@ def _cmd_show(args: argparse.Namespace) -> int:
             if r.error:
                 print(f"        ! {r.error.splitlines()[0][:160]}")
     return 0
+
+
+def _cmd_token(args: argparse.Namespace) -> int:
+    """Show token usage for a task by ID or name search."""
+    query = getattr(args, "query", None) or ""
+    query = query.strip()
+    if not query:
+        print("Usage: hermes kanban token <task_id_or_name>", file=sys.stderr)
+        print("Search a task by its ID (t_xxx) or by a substring of its title.", file=sys.stderr)
+        print("If exactly one match is found, token details are shown.", file=sys.stderr)
+        print("Multiple matches are listed with a token summary each.", file=sys.stderr)
+        return 2
+
+    with kb.connect_closing() as conn:
+        task = None
+        lower = query.lower()
+        if lower.startswith("t_") and len(lower) >= 10:
+            task = kb.get_task(conn, lower)
+
+        if task is None:
+            matches = kb.search_tasks_by_title(conn, query, limit=10, status=None)
+        else:
+            matches = [task]
+
+        if not matches:
+            print("No task found matching " + repr(query), file=sys.stderr)
+            return 1
+
+        if getattr(args, "json", False):
+            data = []
+            for t in matches:
+                entry = {"task_id": t.id, "title": t.title, "status": t.status}
+                tu = _task_token_dict(t)
+                if tu:
+                    entry["token_usage"] = tu
+                data.append(entry)
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return 0
+
+        for t in matches:
+            _print_token_for_task(t)
+    return 0
+
+
+def _print_token_for_task(t: "kb.Task") -> None:
+    """Print token info for a single task."""
+    print()
+    print("Task " + t.id + ": " + t.title)
+    print("  status:    " + t.status)
+    if t.total_tokens is not None:
+        parts = ["in: " + _fmt_num(t.total_input_tokens or 0),
+                 "out: " + _fmt_num(t.total_output_tokens or 0)]
+        if t.total_cache_read_tokens:
+            parts.append("cache: " + _fmt_num(t.total_cache_read_tokens))
+        if t.total_reasoning_tokens:
+            parts.append("reasoning: " + _fmt_num(t.total_reasoning_tokens))
+        line = "  tokens:    " + _fmt_num(t.total_tokens) + " (" + ", ".join(parts) + ")"
+        if t.estimated_cost_usd is not None:
+            status_str = " (" + t.cost_status + ")" if t.cost_status else ""
+            line += " — $" + "{:.6f}".format(t.estimated_cost_usd) + status_str
+        print(line)
+    else:
+        print("  tokens:    (none - no token data recorded)")
+
+
+def _fmt_num(n: Optional[int]) -> str:
+    """Format an integer with commas."""
+    if n is None:
+        return "0"
+    try:
+        return "{:,}".format(int(n))
+    except (TypeError, ValueError):
+        return str(n)
 
 
 def _cmd_assign(args: argparse.Namespace) -> int:

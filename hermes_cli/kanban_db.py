@@ -2445,6 +2445,31 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
+def search_tasks_by_title(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int = 20,
+    status: Optional[str] = None,
+) -> list[Task]:
+    """Search tasks whose title contains ``query`` (case-insensitive LIKE).
+
+    ``status`` filters by task status (e.g. ``'done'``, ``'ready'``).  Pass
+    ``None`` (default) to search all statuses.  Results newest-first.
+    """
+    params: list[Any] = [f"%{query}%"]
+    sql = "SELECT * FROM tasks WHERE title LIKE ?"
+    if status is not None:
+        if status not in VALID_STATUSES:
+            raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY completed_at DESC NULLS LAST, created_at DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return [Task.from_row(r) for r in conn.execute(sql, params).fetchall()]
+
+
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign or reassign a task.  Returns True on success.
 
