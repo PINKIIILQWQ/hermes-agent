@@ -1751,6 +1751,20 @@ def _fmt_num(n: Optional[int]) -> str:
         return str(n)
 
 
+def _cache_hit_rate(cache: Optional[int], inp: Optional[int]) -> str:
+    """Calculate cache hit rate as percentage: cache / (cache + input) * 100.
+
+    Returns a formatted string like ``98.13%`` or ``-`` when incalculable.
+    """
+    if cache is None or inp is None or (cache + inp) == 0:
+        return "-"
+    try:
+        rate = (float(cache) / (float(cache) + float(inp))) * 100.0
+        return f"{rate:.2f}%"
+    except (TypeError, ValueError, ZeroDivisionError):
+        return "-"
+
+
 def _parse_since(value: Optional[str]) -> Optional[int]:
     """Parse a --since value into a Unix timestamp, or None."""
     if not value:
@@ -1799,23 +1813,25 @@ def _cmd_token_ls(args: argparse.Namespace) -> int:
             return 0
 
         # Text output: header + per-task line
-        print(f"{'ID':<22} {'STATUS':<10} {'TOKENS':<12} {'TITLE'}")
-        print("-" * 80)
+        print(f"{'ID':<22} {'STATUS':<10} {'TOKENS':<12} {'HITRATE':<9} {'TITLE'}")
+        print("-" * 90)
         for t in with_token:
             tok_str = _fmt_num(t.total_tokens)
+            hit = _cache_hit_rate(t.total_cache_read_tokens, t.total_input_tokens)
             title = t.title[:50]
-            print(f"{t.id:<22} {t.status:<10} {tok_str:<12} {title}")
+            print(f"{t.id:<22} {t.status:<10} {tok_str:<12} {hit:<9} {title}")
 
         # Summary line
         total_in = sum(t.total_input_tokens or 0 for t in with_token)
         total_out = sum(t.total_output_tokens or 0 for t in with_token)
         total_cache = sum(t.total_cache_read_tokens or 0 for t in with_token)
         total_all = sum(t.total_tokens or 0 for t in with_token)
-        print("-" * 80)
+        total_hit = _cache_hit_rate(total_cache, total_in)
+        print("-" * 90)
         parts = [f"in: {_fmt_num(total_in)}", f"out: {_fmt_num(total_out)}"]
         if total_cache:
             parts.append(f"cache: {_fmt_num(total_cache)}")
-        print(f"{'TOTAL':<22} {'':<10} {_fmt_num(total_all):<12} ({', '.join(parts)})")
+        print(f"{'TOTAL':<22} {'':<10} {_fmt_num(total_all):<12} {total_hit:<9} ({', '.join(parts)})")
     return 0
 
 
@@ -1891,17 +1907,19 @@ def _cmd_token_stats(args: argparse.Namespace) -> int:
         print(f"📊 Kanban Token Statistics{since_label}")
         print(f"   Tasks with data: {count}")
         print()
-        print(f"   {'':>20} {'total':>12} {'input':>12} {'output':>12} {'cache':>12}")
-        print(f"   {'─'*20} {'─'*12} {'─'*12} {'─'*12} {'─'*12}")
+        print(f"   {'':>20} {'total':>12} {'input':>12} {'output':>12} {'cache':>12} {'hitrate':>9}")
+        print(f"   {'─'*20} {'─'*12} {'─'*12} {'─'*12} {'─'*12} {'─'*9}")
+        all_hit = _cache_hit_rate(total_cache, total_in)
         print(f"   {'ALL':>20} {_fmt_num(total_all):>12} {_fmt_num(total_in):>12} "
-              f"{_fmt_num(total_out):>12} {_fmt_num(total_cache):>12}")
-        print(f"   {'':>20} {'':>12} {'':>12} {'':>12} {'':>12}")
+              f"{_fmt_num(total_out):>12} {_fmt_num(total_cache):>12} {all_hit:>9}")
+        print(f"   {'':>20} {'':>12} {'':>12} {'':>12} {'':>12} {'':>9}")
         print(f"   {'Per assignee:':>20}")
         for a in sorted(by_assignee.keys()):
             s = by_assignee[a]
             label = a[:18]
+            hit = _cache_hit_rate(s["cache"], s["input"])
             print(f"   {label:>20} {_fmt_num(s['total']):>12} {_fmt_num(s['input']):>12} "
-                  f"{_fmt_num(s['output']):>12} {_fmt_num(s['cache']):>12}")
+                  f"{_fmt_num(s['output']):>12} {_fmt_num(s['cache']):>12} {hit:>9}")
         print()
         if total_cost > 0:
             print(f"   Estimated cost: ${total_cost:.6f}")
