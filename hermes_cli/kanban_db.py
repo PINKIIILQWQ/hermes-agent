@@ -744,6 +744,25 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Token accounting — aggregate counts across all runs of this task.
+    # Populated by ``complete_task()`` when the worker supplies token
+    # data. NULL on legacy tasks and tasks completed by older worker code
+    # that doesn't report tokens.
+    total_input_tokens: Optional[int] = None
+    total_output_tokens: Optional[int] = None
+    total_cache_read_tokens: Optional[int] = None
+    total_cache_write_tokens: Optional[int] = None
+    total_reasoning_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    # Estimated cost in USD for the aggregate task run. ``cost_status``
+    # indicates how reliable this is:
+    #   'actual'    — provider-reported cost (most reliable)
+    #   'estimated' — calculated from token counts × known rates
+    #   'included'  — bundled into a subscription (e.g. ChatGPT Plus)
+    #   'unknown'   — cannot determine (free tier, no pricing data)
+    #   None        — not yet populated
+    estimated_cost_usd: Optional[float] = None
+    cost_status: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -819,6 +838,38 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
+            # Token accounting fields — optional columns, NULL on legacy rows.
+            total_input_tokens=(
+                int(row["total_input_tokens"]) if "total_input_tokens" in keys
+                and row["total_input_tokens"] is not None else None
+            ),
+            total_output_tokens=(
+                int(row["total_output_tokens"]) if "total_output_tokens" in keys
+                and row["total_output_tokens"] is not None else None
+            ),
+            total_cache_read_tokens=(
+                int(row["total_cache_read_tokens"]) if "total_cache_read_tokens" in keys
+                and row["total_cache_read_tokens"] is not None else None
+            ),
+            total_cache_write_tokens=(
+                int(row["total_cache_write_tokens"]) if "total_cache_write_tokens" in keys
+                and row["total_cache_write_tokens"] is not None else None
+            ),
+            total_reasoning_tokens=(
+                int(row["total_reasoning_tokens"]) if "total_reasoning_tokens" in keys
+                and row["total_reasoning_tokens"] is not None else None
+            ),
+            total_tokens=(
+                int(row["total_tokens"]) if "total_tokens" in keys
+                and row["total_tokens"] is not None else None
+            ),
+            estimated_cost_usd=(
+                float(row["estimated_cost_usd"]) if "estimated_cost_usd" in keys
+                and row["estimated_cost_usd"] is not None else None
+            ),
+            cost_status=(
+                row["cost_status"] if "cost_status" in keys else None
+            ),
         )
 
 
@@ -849,9 +900,21 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    # Token accounting — per-run counts. Populated by ``_end_run()`` and
+    # ``_synthesize_ended_run()`` when the caller supplies token data.
+    # NULL on legacy runs and runs ended by older code.
+    total_input_tokens: Optional[int] = None
+    total_output_tokens: Optional[int] = None
+    total_cache_read_tokens: Optional[int] = None
+    total_cache_write_tokens: Optional[int] = None
+    total_reasoning_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    estimated_cost_usd: Optional[float] = None
+    cost_status: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
+        keys = set(row.keys())
         try:
             meta = json.loads(row["metadata"]) if row["metadata"] else None
         except Exception:
@@ -873,6 +936,38 @@ class Run:
             summary=row["summary"],
             metadata=meta,
             error=row["error"],
+            # Token accounting fields — optional columns, NULL on legacy rows.
+            total_input_tokens=(
+                int(row["total_input_tokens"]) if "total_input_tokens" in keys
+                and row["total_input_tokens"] is not None else None
+            ),
+            total_output_tokens=(
+                int(row["total_output_tokens"]) if "total_output_tokens" in keys
+                and row["total_output_tokens"] is not None else None
+            ),
+            total_cache_read_tokens=(
+                int(row["total_cache_read_tokens"]) if "total_cache_read_tokens" in keys
+                and row["total_cache_read_tokens"] is not None else None
+            ),
+            total_cache_write_tokens=(
+                int(row["total_cache_write_tokens"]) if "total_cache_write_tokens" in keys
+                and row["total_cache_write_tokens"] is not None else None
+            ),
+            total_reasoning_tokens=(
+                int(row["total_reasoning_tokens"]) if "total_reasoning_tokens" in keys
+                and row["total_reasoning_tokens"] is not None else None
+            ),
+            total_tokens=(
+                int(row["total_tokens"]) if "total_tokens" in keys
+                and row["total_tokens"] is not None else None
+            ),
+            estimated_cost_usd=(
+                float(row["estimated_cost_usd"]) if "estimated_cost_usd" in keys
+                and row["estimated_cost_usd"] is not None else None
+            ),
+            cost_status=(
+                row["cost_status"] if "cost_status" in keys else None
+            ),
         )
 
 
@@ -1651,6 +1746,40 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
 
+    # Token accounting columns for the ``tasks`` table — optional INTEGER/REAL/TEXT
+    # columns for aggregated token consumption across all runs of a task.
+    # NULL on legacy rows; populated by ``complete_task()``.
+    tasks_col_names = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    _TASK_TOKEN_COLUMNS: list[tuple[str, str]] = [
+        ("total_input_tokens",       "INTEGER"),
+        ("total_output_tokens",      "INTEGER"),
+        ("total_cache_read_tokens",  "INTEGER"),
+        ("total_cache_write_tokens", "INTEGER"),
+        ("total_reasoning_tokens",   "INTEGER"),
+        ("total_tokens",             "INTEGER"),
+        ("estimated_cost_usd",       "REAL"),
+        ("cost_status",              "TEXT"),
+    ]
+    for col_name, col_type in _TASK_TOKEN_COLUMNS:
+        if col_name not in tasks_col_names:
+            _add_column_if_missing(
+                conn, "tasks", col_name, f"{col_name} {col_type}"
+            )
+
+    # Token accounting columns for the ``task_runs`` table — same shapes,
+    # populated by ``_end_run()`` and ``_synthesize_ended_run()``.
+    # Guard: the table may not exist yet during concurrent migration tests.
+    runs_table_ok = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if runs_table_ok:
+        runs_col_names = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+        for col_name, col_type in _TASK_TOKEN_COLUMNS:
+            if col_name not in runs_col_names:
+                _add_column_if_missing(
+                    conn, "task_runs", col_name, f"{col_name} {col_type}"
+                )
+
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
@@ -2316,6 +2445,31 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
+def search_tasks_by_title(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int = 20,
+    status: Optional[str] = None,
+) -> list[Task]:
+    """Search tasks whose title contains ``query`` (case-insensitive LIKE).
+
+    ``status`` filters by task status (e.g. ``'done'``, ``'ready'``).  Pass
+    ``None`` (default) to search all statuses.  Results newest-first.
+    """
+    params: list[Any] = [f"%{query}%"]
+    sql = "SELECT * FROM tasks WHERE title LIKE ?"
+    if status is not None:
+        if status not in VALID_STATUSES:
+            raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY completed_at DESC NULLS LAST, created_at DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return [Task.from_row(r) for r in conn.execute(sql, params).fetchall()]
+
+
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign or reassign a task.  Returns True on success.
 
@@ -2673,6 +2827,17 @@ def _end_run(
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
     status: Optional[str] = None,
+    # Token accounting — per-run counts. Stored on task_runs rows so
+    # downstream workers (via build_worker_context) and the dashboard
+    # can display them. NULL on legacy runs.
+    total_input_tokens: Optional[int] = None,
+    total_output_tokens: Optional[int] = None,
+    total_cache_read_tokens: Optional[int] = None,
+    total_cache_write_tokens: Optional[int] = None,
+    total_reasoning_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    estimated_cost_usd: Optional[float] = None,
+    cost_status: Optional[str] = None,
 ) -> Optional[int]:
     """Close the currently-active run for ``task_id`` and clear the pointer.
 
@@ -2693,15 +2858,23 @@ def _end_run(
     conn.execute(
         """
         UPDATE task_runs
-           SET status        = ?,
-               outcome       = ?,
-               summary       = ?,
-               error         = ?,
-               metadata      = ?,
-               ended_at      = ?,
-               claim_lock    = NULL,
-               claim_expires = NULL,
-               worker_pid    = NULL
+           SET status                = ?,
+               outcome               = ?,
+               summary               = ?,
+               error                 = ?,
+               metadata              = ?,
+               ended_at              = ?,
+               total_input_tokens    = ?,
+               total_output_tokens   = ?,
+               total_cache_read_tokens= ?,
+               total_cache_write_tokens= ?,
+               total_reasoning_tokens= ?,
+               total_tokens          = ?,
+               estimated_cost_usd    = ?,
+               cost_status           = ?,
+               claim_lock            = NULL,
+               claim_expires         = NULL,
+               worker_pid            = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -2712,6 +2885,14 @@ def _end_run(
             error,
             json.dumps(metadata, ensure_ascii=False) if metadata else None,
             now,
+            total_input_tokens,
+            total_output_tokens,
+            total_cache_read_tokens,
+            total_cache_write_tokens,
+            total_reasoning_tokens,
+            total_tokens,
+            estimated_cost_usd,
+            cost_status,
             run_id,
         ),
     )
@@ -2736,6 +2917,17 @@ def _synthesize_ended_run(
     summary: Optional[str] = None,
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
+    # Token accounting — stored on the synthetic run row for consistency
+    # with _end_run(). All default to None so callers that don't track
+    # tokens (CLI "complete" without --token flags) write clean NULLs.
+    total_input_tokens: Optional[int] = None,
+    total_output_tokens: Optional[int] = None,
+    total_cache_read_tokens: Optional[int] = None,
+    total_cache_write_tokens: Optional[int] = None,
+    total_reasoning_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    estimated_cost_usd: Optional[float] = None,
+    cost_status: Optional[str] = None,
 ) -> int:
     """Insert a zero-duration, already-closed run row.
 
@@ -2765,14 +2957,22 @@ def _synthesize_ended_run(
             task_id, profile, step_key,
             status, outcome,
             summary, error, metadata,
+            total_input_tokens, total_output_tokens,
+            total_cache_read_tokens, total_cache_write_tokens,
+            total_reasoning_tokens, total_tokens,
+            estimated_cost_usd, cost_status,
             started_at, ended_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id, profile, step_key,
             outcome, outcome,
             summary, error,
             json.dumps(metadata, ensure_ascii=False) if metadata else None,
+            total_input_tokens, total_output_tokens,
+            total_cache_read_tokens, total_cache_write_tokens,
+            total_reasoning_tokens, total_tokens,
+            estimated_cost_usd, cost_status,
             now, now,
         ),
     )
@@ -3511,6 +3711,18 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    # Token accounting — aggregate counts written to both the tasks row
+    # (for fast SQL queries) and the closing run row (for per-attempt
+    # granularity). All default to None so existing callers (CLI, old
+    # workers) are unaffected.
+    total_input_tokens: Optional[int] = None,
+    total_output_tokens: Optional[int] = None,
+    total_cache_read_tokens: Optional[int] = None,
+    total_cache_write_tokens: Optional[int] = None,
+    total_reasoning_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    estimated_cost_usd: Optional[float] = None,
+    cost_status: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -3574,32 +3786,58 @@ def complete_task(
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
+                   SET status                = 'done',
+                       result                = ?,
+                       completed_at          = ?,
+                       total_input_tokens    = ?,
+                       total_output_tokens   = ?,
+                       total_cache_read_tokens= ?,
+                       total_cache_write_tokens= ?,
+                       total_reasoning_tokens= ?,
+                       total_tokens          = ?,
+                       estimated_cost_usd    = ?,
+                       cost_status           = ?,
+                       claim_lock            = NULL,
+                       claim_expires         = NULL,
+                       worker_pid            = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
-                (result, now, task_id),
+                (result, now,
+                 total_input_tokens, total_output_tokens,
+                 total_cache_read_tokens, total_cache_write_tokens,
+                 total_reasoning_tokens, total_tokens,
+                 estimated_cost_usd, cost_status,
+                 task_id),
             )
         else:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
+                   SET status                = 'done',
+                       result                = ?,
+                       completed_at          = ?,
+                       total_input_tokens    = ?,
+                       total_output_tokens   = ?,
+                       total_cache_read_tokens= ?,
+                       total_cache_write_tokens= ?,
+                       total_reasoning_tokens= ?,
+                       total_tokens          = ?,
+                       estimated_cost_usd    = ?,
+                       cost_status           = ?,
+                       claim_lock            = NULL,
+                       claim_expires         = NULL,
+                       worker_pid            = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (result, now,
+                 total_input_tokens, total_output_tokens,
+                 total_cache_read_tokens, total_cache_write_tokens,
+                 total_reasoning_tokens, total_tokens,
+                 estimated_cost_usd, cost_status,
+                 task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -3608,6 +3846,14 @@ def complete_task(
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
             metadata=metadata,
+            total_input_tokens=total_input_tokens,
+            total_output_tokens=total_output_tokens,
+            total_cache_read_tokens=total_cache_read_tokens,
+            total_cache_write_tokens=total_cache_write_tokens,
+            total_reasoning_tokens=total_reasoning_tokens,
+            total_tokens=total_tokens,
+            estimated_cost_usd=estimated_cost_usd,
+            cost_status=cost_status,
         )
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
@@ -3619,6 +3865,14 @@ def complete_task(
                 outcome="completed",
                 summary=summary if summary is not None else result,
                 metadata=metadata,
+                total_input_tokens=total_input_tokens,
+                total_output_tokens=total_output_tokens,
+                total_cache_read_tokens=total_cache_read_tokens,
+                total_cache_write_tokens=total_cache_write_tokens,
+                total_reasoning_tokens=total_reasoning_tokens,
+                total_tokens=total_tokens,
+                estimated_cost_usd=estimated_cost_usd,
+                cost_status=cost_status,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
