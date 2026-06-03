@@ -1636,13 +1636,11 @@
   border-color: color-mix(in srgb, var(--color-ring) 30%, transparent);
 }
 .hermes-kanban-card-id-clickable--copied {
-  color: var(--color-success, #4ade80);
+  color: var(--color-foreground);
 }
 
-/* Task drawer head — copy button sitting between the task-id label
-   and the × close button. Uses the SDK's Button component (outline
-   variant, size sm) so it matches the refresh/archive button style.
-   The --copied variant flips text to a success colour for 2 s. */
-.hermes-kanban-drawer-id-copy--copied {
-  color: var(--color-success, #4ade80);
+/* Board header copy button — sits where the task count used to be.
+   When a task drawer is open this shows instead of "N tasks". */
+.hermes-kanban-header-id-copy--copied {
+  color: var(--color-foreground);
 }

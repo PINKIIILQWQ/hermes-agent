@@ -1022,6 +1022,7 @@
           onSwitch: switchBoard,
           onNewClick: function () { setShowNewBoard(true); },
           onDeleteBoard: deleteBoard,
+          selectedTaskId: selectedTaskId,
         }),
         showNewBoard ? h(NewBoardDialog, {
           onCancel: function () { setShowNewBoard(false); },
@@ -1797,6 +1798,7 @@
     const currentName = current && current.name ? current.name : props.board;
     const currentTotal = current ? current.total : 0;
     const hasMultipleBoards = list.length > 1;
+    const [headerIdCopied, setHeaderIdCopied] = useState(false);
 
     // Hide entirely when only the default board exists AND it's empty —
     // single-project users never see boards UI unless they ask for it.
@@ -1838,8 +1840,31 @@
                 return h(SelectOption, { key: b.slug, value: b.slug }, label);
               }),
             ),
-            h("span", { className: "text-xs text-muted-foreground" },
-              `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
+            props.selectedTaskId
+              ? h(Button, {
+                  size: "sm",
+                  variant: "outline",
+                  className: cn(
+                    "hermes-kanban-header-id-copy",
+                    headerIdCopied ? "hermes-kanban-header-id-copy--copied" : "",
+                  ),
+                  onClick: function (e) {
+                    e.stopPropagation();
+                    var fallback = function () { window.prompt("Copy:", props.selectedTaskId); };
+                    try {
+                      var p = navigator.clipboard && navigator.clipboard.writeText(props.selectedTaskId);
+                      if (p && p.then) {
+                        p.then(function () {
+                          setHeaderIdCopied(true);
+                          setTimeout(function () { setHeaderIdCopied(false); }, 2000);
+                        }).catch(fallback);
+                      } else { fallback(); }
+                    } catch (_e) { fallback(); }
+                  },
+                  title: "Copy task ID to clipboard",
+                }, headerIdCopied ? "已复制" : "复制 任务ID" + props.selectedTaskId)
+              : h("span", { className: "text-xs text-muted-foreground" },
+                  `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
           ),
         ),
         h("div", { className: "flex-1" }),
@@ -2862,7 +2887,6 @@
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
-    const [drawerIdCopied, setDrawerIdCopied] = useState(false);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
     // us whether this task is currently subscribed via that platform's home.
@@ -3083,30 +3107,8 @@
       },
         h("div", { className: "hermes-kanban-drawer-head" },
           h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
-          h(Button, {
-            size: "sm",
-            variant: "outline",
-            className: cn(
-              "hermes-kanban-drawer-id-copy",
-              drawerIdCopied ? "hermes-kanban-drawer-id-copy--copied" : "",
-            ),
-            onClick: function (e) {
-              e.stopPropagation();
-              var fallback = function () { window.prompt("Copy:", props.taskId); };
-              try {
-                var p = navigator.clipboard && navigator.clipboard.writeText(props.taskId);
-                if (p && p.then) {
-                  p.then(function () {
-                    setDrawerIdCopied(true);
-                    setTimeout(function () { setDrawerIdCopied(false); }, 2000);
-                  }).catch(fallback);
-                } else {
-                  fallback();
-                }
-              } catch (_e) { fallback(); }
-            },
-            title: "Copy task ID to clipboard",
-          }, drawerIdCopied ? "已复制" : "复制任务ID"),
+          h("span", { className: "text-xs text-muted-foreground" },
+            " · " + (props.allTasks ? props.allTasks.length : 0) + " task" + ((props.allTasks ? props.allTasks.length : 0) === 1 ? "" : "s")),
           h("button", {
             type: "button",
             onClick: props.onClose,
