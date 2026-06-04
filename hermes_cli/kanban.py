@@ -834,6 +834,43 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit one JSON object per task on stdout",
     )
 
+    # --- workspace ---
+    p_ws = sub.add_parser(
+        "workspace",
+        help="Inspect and manage task workspace files",
+        description="List, copy, and link files in a task's persistent scratch workspace. "
+                    "Workspace files survive task completion.",
+    )
+    ws_sub = p_ws.add_subparsers(dest="workspace_action")
+
+    p_ws_path = ws_sub.add_parser(
+        "path",
+        help="Print the absolute workspace path for a task",
+    )
+    p_ws_path.add_argument("task_id")
+
+    p_ws_ls = ws_sub.add_parser(
+        "ls", aliases=["list"],
+        help="List files in a task's workspace directory",
+    )
+    p_ws_ls.add_argument("task_id")
+    p_ws_ls.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    p_ws_cp = ws_sub.add_parser(
+        "cp",
+        help="Copy a file from a task's workspace to a target path",
+    )
+    p_ws_cp.add_argument("task_id")
+    p_ws_cp.add_argument("file", help="Filename within the workspace (or '.' for all)")
+    p_ws_cp.add_argument("target", help="Destination path (absolute or relative)")
+
+    p_ws_link = ws_sub.add_parser(
+        "link",
+        help="Create a symbolic link to the task's workspace directory",
+    )
+    p_ws_link.add_argument("task_id")
+    p_ws_link.add_argument("target", help="Destination path for the symlink")
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -968,6 +1005,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "specify":  _cmd_specify,
         "decompose":  _cmd_decompose,
         "gc":       _cmd_gc,
+        "workspace": _cmd_workspace,
     }
     handler = handlers.get(action)
     if not handler:
@@ -2735,6 +2773,159 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     )
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Workspace inspection (hermes kanban workspace …)
+# ---------------------------------------------------------------------------
+
+
+def _cmd_workspace(args: argparse.Namespace) -> int:
+    """Dispatch ``hermes kanban workspace <action>``."""
+    sub = getattr(args, "workspace_action", None)
+    if not sub:
+        print("kanban workspace: missing action (path|ls|cp|link)", file=sys.stderr)
+        return 2
+    handlers = {
+        "path": _cmd_workspace_path,
+        "ls":   _cmd_workspace_ls,
+        "list": _cmd_workspace_ls,
+        "cp":   _cmd_workspace_cp,
+        "link": _cmd_workspace_link,
+    }
+    handler = handlers.get(sub)
+    if not handler:
+        print(f"kanban workspace: unknown action {sub!r}", file=sys.stderr)
+        return 2
+    return handler(args)
+
+
+def _resolve_workspace_path(task_id: str) -> tuple[Optional[Path], int]:
+    """Resolve a task's workspace directory from the DB.
+
+    Returns ``(path, exit_code)``. On error path is None and exit_code > 0.
+    """
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+    if task is None:
+        print(f"kanban: no such task: {task_id}", file=sys.stderr)
+        return None, 1
+    ws_path = task.workspace_path
+    if not ws_path:
+        print(
+            f"kanban: task {task_id} has no workspace yet "
+            f"(status={task.status})",
+            file=sys.stderr,
+        )
+        return None, 1
+    p = Path(ws_path)
+    if not p.exists():
+        print(
+            f"kanban: workspace directory for {task_id} does not exist "
+            f"(expected at {p})",
+            file=sys.stderr,
+        )
+        return None, 1
+    return p, 0
+
+
+def _cmd_workspace_path(args: argparse.Namespace) -> int:
+    p, code = _resolve_workspace_path(args.task_id)
+    if p is None:
+        return code
+    print(p)
+    return 0
+
+
+def _cmd_workspace_ls(args: argparse.Namespace) -> int:
+    p, code = _resolve_workspace_path(args.task_id)
+    if p is None:
+        return code
+    entries: list[dict[str, Any]] = []
+    for child in sorted(p.iterdir()):
+        st = child.stat()
+        mtime = time.strftime(
+            "%Y-%m-%d %H:%M", time.localtime(st.st_mtime)
+        )
+        if st.st_mode & 0o170000 == 0o120000:  # S_IFLNK
+            kind = "symlink"
+        elif child.is_dir():
+            kind = "dir"
+        else:
+            kind = "file"
+        entries.append({
+            "name": child.name,
+            "size": st.st_size,
+            "kind": kind,
+            "mtime": mtime,
+        })
+    if getattr(args, "json", False):
+        print(json.dumps(entries, indent=2, ensure_ascii=False))
+        return 0
+    if not entries:
+        print("(empty workspace)")
+        return 0
+    max_name = max(len(e["name"]) for e in entries)
+    max_size = max(len(_ws_fmt_size(e["size"])) for e in entries)
+    for e in entries:
+        print(
+            f"{e['name']:<{max_name}}  "
+            f"{_ws_fmt_size(e['size']):>{max_size}}  "
+            f"{e['kind']:<7}  "
+            f"{e['mtime']}"
+        )
+    return 0
+
+
+def _ws_fmt_size(n: int) -> str:
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}K"
+    return f"{n / (1024 * 1024):.1f}M"
+
+
+def _cmd_workspace_cp(args: argparse.Namespace) -> int:
+    import shutil
+    p, code = _resolve_workspace_path(args.task_id)
+    if p is None:
+        return code
+    target = Path(args.target)
+    if args.file == ".":
+        shutil.copytree(p, target, dirs_exist_ok=True)
+        print(f"Copied workspace {args.task_id} → {target}")
+    else:
+        src = p / args.file
+        if not src.exists():
+            print(
+                f"kanban: {args.file!r} not found in workspace {args.task_id}",
+                file=sys.stderr,
+            )
+            return 1
+        if src.is_dir():
+            shutil.copytree(src, target, dirs_exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, target)
+        print(f"Copied {args.file} → {target}")
+    return 0
+
+
+def _cmd_workspace_link(args: argparse.Namespace) -> int:
+    p, code = _resolve_workspace_path(args.task_id)
+    if p is None:
+        return code
+    target = Path(args.target).expanduser().resolve()
+    if target.exists():
+        print(
+            f"kanban: {target} already exists — remove it first or choose a different path",
+            file=sys.stderr,
+        )
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(p)
+    print(f"Linked {args.task_id} workspace → {target}")
     return 0
 
 

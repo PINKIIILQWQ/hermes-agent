@@ -3824,8 +3824,10 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             # completion would unconditionally ``shutil.rmtree`` that path
             # and silently delete the user's source data.
             if _is_managed_scratch_path(wp):
-                shutil.rmtree(wp, ignore_errors=True)
-                _log.debug("Removed scratch workspace: %s", wp)
+                # Scratch workspace contents are intentionally preserved so
+                # task output files remain accessible after completion.
+                # See design doc in PR #34243 for rationale.
+                pass
             else:
                 _log.warning(
                     "Refusing to remove out-of-scratch workspace for task %s: %s "
@@ -3862,6 +3864,49 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
                 capture_output=True, timeout=5,
             )
             _log.debug("Killed stale tmux session: %s", session)
+    except Exception:
+        pass  # best-effort — never block completion
+
+
+def _cleanup_archive_workspace(conn: sqlite3.Connection, task_id: str) -> None:
+    """Remove the task's scratch workspace dir and null out workspace_path on archive.
+
+    Called from :func:`archive_task` after the DB transaction commits.
+    Only ``scratch`` workspaces are removed — ``dir`` and ``worktree`` are
+    intentionally preserved (they may point at user source trees).
+    Uses the same containment guard as :func:`_cleanup_workspace`.
+    """
+    try:
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return
+        kind: Optional[str] = row["workspace_kind"]
+        path: Optional[str] = row["workspace_path"]
+        if kind != "scratch" or not path:
+            return
+        # Null out workspace_path first so future inheritors (decompose
+        # children) cannot accidentally pick up a defunct path.
+        conn.execute(
+            "UPDATE tasks SET workspace_path = NULL WHERE id = ?",
+            (task_id,),
+        )
+        import shutil
+        wp = Path(path)
+        if wp.is_dir() and _is_managed_scratch_path(wp):
+            shutil.rmtree(wp, ignore_errors=True)
+            _log.debug("Removed scratch workspace on archive: %s", wp)
+        elif wp.is_dir():
+            _log.warning(
+                "Refusing to remove out-of-scratch workspace on archive for task %s: %s "
+                "(workspace_kind='scratch' but path is outside any "
+                "kanban-managed workspaces root)",
+                task_id, wp,
+            )
+        # Also kill the stale tmux session, if any.
+        _cleanup_worker_tmux(conn, task_id)
     except Exception:
         pass  # best-effort — never block completion
 
@@ -4539,6 +4584,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
     recompute_ready(conn)
+    # Clean up scratch workspace: rmtree the directory and null out
+    # workspace_path so future inheritors cannot pick up a defunct path.
+    _cleanup_archive_workspace(conn, task_id)
     return True
 
 

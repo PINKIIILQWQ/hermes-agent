@@ -1934,7 +1934,7 @@ def test_worktree_workspace_returns_intended_path(kanban_home, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
-    """A scratch workspace under the kanban workspaces root is removed."""
+    """A scratch workspace under the kanban workspaces root is preserved after completion."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="scratchy")
         task = kb.get_task(conn, t)
@@ -1942,7 +1942,7 @@ def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
         kb.set_workspace_path(conn, t, ws)
         assert ws.is_dir()
         kb.complete_task(conn, t, result="ok")
-    assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
+    assert ws.exists(), "Hermes-managed scratch dir should be preserved after completion"
 
 
 def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):
@@ -2003,7 +2003,7 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
         conn.commit()
         kb.complete_task(conn, t, result="ok")
 
-    assert not scratch_dir.exists(), "Override-root scratch dir should be cleaned up"
+    assert scratch_dir.exists(), "Managed scratch dir should be preserved after completion"
 
 
 def test_is_managed_scratch_path_accepts_per_board_workspaces(kanban_home, tmp_path):

@@ -3871,3 +3871,6 @@
     window.__HERMES_PLUGINS__.register("kanban", KanbanPage);
   }
 })();
+
+/* HERMES_TEST_MARKER_20260604 */
+TEST_MARKER_1780508824
