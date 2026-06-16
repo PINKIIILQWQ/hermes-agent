@@ -1066,7 +1066,8 @@ class ContextCompressor(ContextEngine):
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
-                            args = redact_sensitive_text(fn.get("arguments", ""))
+                            is_code_tool = name in {"write_file", "patch"}
+                            args = redact_sensitive_text(fn.get("arguments", ""), code_file=is_code_tool)
                             # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
                                 args = args[:self._TOOL_ARGS_HEAD] + "..."
@@ -1141,7 +1142,8 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg.get("tool_calls") or []:
                     name, raw_args = _extract_tool_call_name_and_args(tc)
-                    args = redact_sensitive_text(raw_args)
+                    is_code_tool = name in {"write_file", "patch"}
+                    args = redact_sensitive_text(raw_args, code_file=is_code_tool)
                     call_id = _extract_tool_call_id(tc)
                     if call_id:
                         call_id_to_tool[call_id] = (name, args)

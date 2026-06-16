@@ -486,3 +486,72 @@ class TestXaiToken:
     def test_prefix_visible_in_masked_output(self):
         result = redact_sensitive_text(self.KEY, force=True)
         assert result.startswith("xai-AB")
+
+
+class TestCodeFileMode:
+    """Tests for code_file=True mode: skips ENV-assignment and JSON-field
+    redaction for write_file/patch content while still redacting real credentials."""
+
+    def test_source_code_preserved_in_code_file_mode(self):
+        """Source code with SECRET_KEY assignment — preserved with code_file=True."""
+        text = "SECRET_KEY = 'django-insecure-abc123def456'"
+        result = redact_sensitive_text(text, code_file=True)
+        assert result == text  # preserved
+
+    def test_json_fixture_preserved_in_code_file_mode(self):
+        """JSON-like content with 'apiKey' — preserved with code_file=True."""
+        text = '{"apiKey": "demo-key-abc123", "userId": 42}'
+        result = redact_sensitive_text(text, code_file=True)
+        assert result == text  # preserved
+
+    def test_token_count_not_redacted_in_code_file_mode(self):
+        """token_count variable — preserved with code_file=True."""
+        text = "token_count = len(tokens)"
+        result = redact_sensitive_text(text, code_file=True)
+        assert result == text  # preserved
+
+    def test_known_prefix_still_redacted_in_code_file_mode(self):
+        """Known credential prefixes still redacted even with code_file=True."""
+        text = "ghp_ab...9jkl"
+        result = redact_sensitive_text(text, code_file=True)
+        assert "abc123def456" not in result  # still caught by _PREFIX_RE
+
+    def test_jwt_still_redacted_in_code_file_mode(self):
+        """JWT tokens still redacted with code_file=True."""
+        text = (
+            "Token: eyJhbG...VCJ9"
+            ".eyJpc3...wIn0"
+            ".Gxgv0rru-_kS-I_60EJ7CENTnBh9UeuL3QhkMoQ-VnM"
+        )
+        result = redact_sensitive_text(text, code_file=True)
+        assert "eyJpc3Mi" not in result  # still caught by _JWT_RE
+
+    def test_db_connstr_still_redacted_in_code_file_mode(self):
+        """DB connection strings still redacted with code_file=True."""
+        text = "postgresql://admin:***@cluster0.mongodb.net:27017"
+        result = redact_sensitive_text(text, code_file=True)
+        assert "mypassword" not in result  # still caught by _DB_CONNSTR_RE
+
+    def test_write_file_arguments_not_corrupted(self):
+        """Simulated write_file tool call — content survives redaction."""
+        tc_dict = {
+            "name": "write_file",
+            "arguments": '{"path": "settings.py", "content": "SECRET_KEY = \'django-insecure-test123\'\\nDEBUG = True"}',
+        }
+        tool_name = tc_dict.get("name", "")
+        is_code_tool = tool_name in {"write_file", "patch"}
+        args = redact_sensitive_text(tc_dict["arguments"], code_file=is_code_tool)
+        assert "django-insecure" in args  # content preserved
+
+    def test_patch_arguments_not_corrupted(self):
+        """Simulated patch tool call — content survives redaction."""
+        tc_dict = {
+            "name": "patch",
+            "arguments": '{"path": "app.py", "old_string": "SECRET_KEY = \'old-value\'", "new_string": "SECRET_KEY = \'new-value\'"}',
+        }
+        tool_name = tc_dict.get("name", "")
+        is_code_tool = tool_name in {"write_file", "patch"}
+        args = redact_sensitive_text(tc_dict["arguments"], code_file=is_code_tool)
+        assert "SECRET_KEY" in args  # env-like assignments in content preserved
+        assert "old-value" in args
+        assert "new-value" in args

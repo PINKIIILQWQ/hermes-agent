@@ -1024,8 +1024,11 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             # sk-...'")`). (#19798)
             if isinstance(tc_dict["function"]["arguments"], str):
                 from agent.redact import redact_sensitive_text
+                tool_name = tc_dict["function"].get("name", "")
+                is_code_tool = tool_name in {"write_file", "patch"}
                 tc_dict["function"]["arguments"] = redact_sensitive_text(
-                    tc_dict["function"]["arguments"]
+                    tc_dict["function"]["arguments"],
+                    code_file=is_code_tool,
                 )
             # Preserve extra_content (e.g. Gemini thought_signature) so it
             # is sent back on subsequent API calls.  Without this, Gemini 3

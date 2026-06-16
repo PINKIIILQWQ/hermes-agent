@@ -94,7 +94,7 @@ _PREFIX_PATTERNS = [
     r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
     r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
-    r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
+    r"sk_[A-Za-z0-9_]{16,}",            # ElevenLabs TTS key (raised from {10,})
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
     r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key
@@ -108,7 +108,7 @@ _PREFIX_PATTERNS = [
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
-_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+_SECRET_ENV_NAMES = r"(?:API_?KEY|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN(?![A-Z0-9_])|SECRET|PASSWORD|PASSWD|CREDENTIAL(?![A-Z0-9_])|AUTH(?![A-Z0-9_]))"
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
