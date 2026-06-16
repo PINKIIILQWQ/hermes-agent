@@ -1302,6 +1302,18 @@ class SessionStore:
                      duplicate-write bug (#860).
         """
         if self._db and not skip_db:
+            # Idempotency guard: if this message has a platform_message_id and a row
+            # with that id already exists for this session, skip the INSERT.
+            # Prevents duplicate rows from retry paths (#47237).
+            _platform_msg_id = message.get("platform_message_id") or message.get("message_id")
+            if _platform_msg_id and self._db.message_exists(
+                session_id=session_id, platform_message_id=_platform_msg_id,
+            ):
+                logger.debug(
+                    "Skipping duplicate append for message %s (session %s)",
+                    _platform_msg_id, session_id,
+                )
+                return
             try:
                 self._db.append_message(
                     session_id=session_id,
@@ -1315,12 +1327,8 @@ class SessionStore:
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
                     codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
-                    # Platform-side message id (yuanbao msg_id, telegram update_id, …).
-                    # Accept either explicit ``platform_message_id`` or the legacy
-                    # ``message_id`` key the JSONL transcript used.
-                    platform_message_id=(
-                        message.get("platform_message_id") or message.get("message_id")
-                    ),
+                    # Platform-side message id — already resolved above for the guard
+                    platform_message_id=_platform_msg_id,
                     observed=bool(message.get("observed")),
                 )
             except Exception as e:

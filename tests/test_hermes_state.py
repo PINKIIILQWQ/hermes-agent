@@ -4141,3 +4141,101 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+# =========================================================================
+# T3.1 — TestMessageExists (idempotency guard helper, #47237)
+# =========================================================================
+
+class TestMessageExists:
+    """Tests for SessionDB.message_exists() — idempotency guard helper."""
+
+    def test_message_exists_returns_true_when_row_exists(self, db):
+        """message_exists returns True when a matching row exists."""
+        db.create_session(session_id="s_me1", source="cli")
+        db.append_message("s_me1", role="user", content="hi", platform_message_id="msg_1")
+        assert db.message_exists("s_me1", "msg_1") is True
+
+    def test_message_exists_returns_false_when_no_row(self, db):
+        """message_exists returns False when no row matches."""
+        db.create_session(session_id="s_me2", source="cli")
+        assert db.message_exists("s_me2", "nonexistent") is False
+
+    def test_message_exists_wrong_session(self, db):
+        """message_exists scopes query by session_id."""
+        db.create_session(session_id="s_me3a", source="cli")
+        db.create_session(session_id="s_me3b", source="cli")
+        db.append_message("s_me3a", role="user", content="hi", platform_message_id="shared_id")
+        # Same id in different session should NOT be found
+        assert db.message_exists("s_me3b", "shared_id") is False
+
+
+# =========================================================================
+# T3.3 — TestInsertOrIgnore (INSERT OR IGNORE + UNIQUE index, #47237)
+# =========================================================================
+
+class TestInsertOrIgnore:
+    """Tests for INSERT OR IGNORE behavior and the UNIQUE index."""
+
+    def test_insert_or_ignore_returns_existing_rowid_on_duplicate(self, db):
+        """INSERT OR IGNORE returns the existing row's id for a duplicate platform_message_id."""
+        db.create_session(session_id="s_ioi1", source="cli")
+        mid1 = db.append_message("s_ioi1", role="user", content="hi", platform_message_id="pm_dup")
+        mid2 = db.append_message("s_ioi1", role="user", content="hi", platform_message_id="pm_dup")
+        assert mid1 != 0
+        assert mid2 == mid1  # both point to the same row
+
+    def test_a_b_duplicate_a_returns_original_id(self, db):
+        """A -> B -> duplicate A: each duplicate returns the original first row id."""
+        db.create_session(session_id="s_abd", source="cli")
+        id_a = db.append_message("s_abd", role="user", content="first", platform_message_id="pm_a")
+        id_b = db.append_message("s_abd", role="user", content="second", platform_message_id="pm_b")
+        id_a2 = db.append_message("s_abd", role="user", content="first retry", platform_message_id="pm_a")  # dup
+
+        assert id_a != 0
+        assert id_b != 0
+        assert id_a2 == id_a  # duplicate returns original row id
+        assert id_a2 != id_b  # not confused with B's id
+
+    def test_duplicate_without_platform_message_id(self, db):
+        """Two identical inserts without platform_message_id: both insert (no dedup)."""
+        db.create_session(session_id="s_npm", source="cli")
+        mid1 = db.append_message("s_npm", role="user", content="a")
+        mid2 = db.append_message("s_npm", role="user", content="a")
+        # Without platform_message_id, the UNIQUE index doesn't fire.
+        # Both inserts succeed, so we get two different row IDs.
+        assert mid1 != 0
+        assert mid2 != 0
+        assert mid2 != mid1
+
+    def test_message_unchanged_on_duplicate(self, db):
+        """Duplicate INSERT OR IGNORE does NOT mutate existing row."""
+        db.create_session(session_id="s_ioi2", source="cli")
+        db.append_message("s_ioi2", role="user", content="original", platform_message_id="pm_fixed")
+        db.append_message("s_ioi2", role="user", content="different", platform_message_id="pm_fixed")
+        messages = db.get_messages("s_ioi2")
+        assert len(messages) == 1  # still 1 row
+        assert messages[0]["content"] == "original"  # first write wins
+
+    def test_counter_not_incremented_on_duplicate(self, db):
+        """message_count stays unchanged when duplicate is ignored."""
+        db.create_session(session_id="s_ioi3", source="cli")
+        db.append_message("s_ioi3", role="user", content="a", platform_message_id="pm_1")
+        before = db.get_session("s_ioi3")["message_count"]
+        db.append_message("s_ioi3", role="user", content="a", platform_message_id="pm_1")  # dup
+        after = db.get_session("s_ioi3")["message_count"]
+        assert after == before
+
+    def test_unique_index_blocks_bare_insert(self, db):
+        """UNIQUE index causes IntegrityError on bare INSERT (without OR IGNORE)."""
+        import sqlite3
+        db.create_session(session_id="s_ioi4", source="cli")
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO messages (session_id, role, content, platform_message_id, timestamp) "
+            "VALUES (?, ?, ?, ?, ?)", ("s_ioi4", "user", "hello", "uniq_test", 1000.0)
+        ))
+        with pytest.raises(sqlite3.IntegrityError):
+            db._execute_write(lambda conn: conn.execute(
+                "INSERT INTO messages (session_id, role, content, platform_message_id, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)", ("s_ioi4", "user", "hello again", "uniq_test", 1001.0)
+            ))

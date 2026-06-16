@@ -1309,3 +1309,93 @@ class TestRewriteTranscriptPreservesReasoning:
             "before user",
             "before assistant",
         ]
+
+
+# =========================================================================
+# T3.2 — TestAppendToTranscriptIdempotency (guard in append_to_transcript, #47237)
+# =========================================================================
+
+class TestAppendToTranscriptIdempotency:
+    """Idempotency guard prevents duplicate appends via platform_message_id."""
+
+    @pytest.fixture()
+    def store(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        config = GatewayConfig()
+        return SessionStore(sessions_dir=tmp_path, config=config)
+
+    def test_skips_duplicate_append(self, store):
+        """Same platform_message_id twice -> only one INSERT."""
+        session_id = "dup_test_1"
+        store._db.create_session(session_id=session_id, source="test")
+        msg = {"role": "user", "content": "hello", "platform_message_id": "pm_001"}
+        store.append_to_transcript(session_id, msg)
+        store.append_to_transcript(session_id, msg)  # second call
+        assert len(store.load_transcript(session_id)) == 1
+
+    def test_does_not_skip_different_messages(self, store):
+        """Different platform_message_ids -> both are inserted."""
+        session_id = "dup_test_2"
+        store._db.create_session(session_id=session_id, source="test")
+        store.append_to_transcript(session_id, {"role": "user", "content": "a", "platform_message_id": "pm_001"})
+        store.append_to_transcript(session_id, {"role": "user", "content": "b", "platform_message_id": "pm_002"})
+        assert len(store.load_transcript(session_id)) == 2
+
+    def test_skips_when_no_platform_message_id(self, store):
+        """No platform_message_id -> no dedup check (backward compat)."""
+        session_id = "dup_test_3"
+        store._db.create_session(session_id=session_id, source="test")
+        store.append_to_transcript(session_id, {"role": "user", "content": "a"})
+        store.append_to_transcript(session_id, {"role": "user", "content": "b"})
+        assert len(store.load_transcript(session_id)) == 2
+
+
+# =========================================================================
+# T3.4 — TestDuplicatePreventionIntegration (end-to-end, #47237)
+# =========================================================================
+
+class TestDuplicatePreventionIntegration:
+    """End-to-end: simulate the actual duplicate scenario from the bug report."""
+
+    @pytest.fixture()
+    def store(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        config = GatewayConfig()
+        return SessionStore(sessions_dir=tmp_path, config=config)
+
+    def test_no_duplicate_after_double_append_with_platform_id(self, store):
+        """
+        Simulate the bug scenario:
+        1. Agent's _persist_session() writes the user message (via append_to_transcript)
+        2. Exception handler fires and calls append_to_transcript again for same message
+        -> Only 1 row in messages table
+        """
+        session_id = "integ_dup_1"
+        store._db.create_session(session_id=session_id, source="test")
+
+        # First call - normal path
+        user_msg = {"role": "user", "content": "hello", "platform_message_id": "pm_integ_001"}
+        store.append_to_transcript(session_id, user_msg)
+
+        # Second call - exception handler retry path (same message, same idempotency key)
+        store.append_to_transcript(session_id, user_msg)
+
+        transcript = store.load_transcript(session_id)
+        assert len(transcript) == 1
+        assert transcript[0]["content"] == "hello"
+
+    def test_no_duplicate_with_legacy_message_id(self, store):
+        """
+        Legacy message_id key (not platform_message_id) should also trigger the guard.
+        """
+        session_id = "integ_dup_2"
+        store._db.create_session(session_id=session_id, source="test")
+
+        msg_a = {"role": "user", "content": "legacy test", "message_id": "legacy_001"}
+        store.append_to_transcript(session_id, msg_a)
+        store.append_to_transcript(session_id, msg_a)
+
+        transcript = store.load_transcript(session_id)
+        assert len(transcript) == 1

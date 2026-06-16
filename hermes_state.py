@@ -107,7 +107,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -1085,13 +1085,23 @@ class SessionDB:
         # makes the initial executescript fail on legacy DBs (the index's
         # WHERE clause references a column that doesn't exist yet).
         try:
+            # Migration: deduplicate existing rows before creating UNIQUE index (#47237)
+            cursor.execute("""
+                DELETE FROM messages WHERE id NOT IN (
+                    SELECT MIN(id) FROM messages
+                    WHERE platform_message_id IS NOT NULL
+                    GROUP BY session_id, platform_message_id
+                )
+                AND platform_message_id IS NOT NULL
+            """)
+            cursor.execute("DROP INDEX IF EXISTS idx_messages_platform_msg_id")
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_platform_msg_id "
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_platform_msg_id "
                 "ON messages(session_id, platform_message_id) "
                 "WHERE platform_message_id IS NOT NULL"
             )
         except sqlite3.OperationalError as exc:
-            logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
+            logger.debug("uq_messages_platform_msg_id create skipped: %s", exc)
 
         # Deferred indexes that reference the reconciler-added ``active``
         # column (idx_messages_session_active) — same ordering constraint.
@@ -1238,6 +1248,43 @@ class SessionDB:
                         "                WHERE ch.parent_session_id = sessions.id)"
                     )
                 except sqlite3.OperationalError:
+                    pass
+            if current_version < 17:
+                # v17: migrate legacy duplicate platform_message_id rows and
+                # rebuild session counters.  INSERT OR IGNORE + the UNIQUE
+                # partial index prevent new duplicates, but existing DBs may
+                # have multiple rows with the same (session_id, platform_message_id).
+                # Keep the earliest row for each pair, then recompute counters.
+                try:
+                    cursor.execute("BEGIN")
+                    cursor.execute(
+                        "DELETE FROM messages WHERE rowid NOT IN ("
+                        "SELECT MIN(rowid) FROM messages "
+                        "WHERE platform_message_id IS NOT NULL "
+                        "GROUP BY session_id, platform_message_id"
+                        ") AND platform_message_id IS NOT NULL"
+                    )
+                    cursor.execute(
+                        "UPDATE sessions SET "
+                        "message_count = ("
+                        "  SELECT COUNT(*) FROM messages "
+                        "  WHERE messages.session_id = sessions.id"
+                        "), "
+                        "tool_call_count = ("
+                        "  SELECT COALESCE(SUM("
+                        "    CASE"
+                        "      WHEN tool_calls IS NULL THEN 0"
+                        "      WHEN json_type(tool_calls) = 'array'"
+                        "        THEN json_array_length(tool_calls)"
+                        "      ELSE 1"
+                        "    END"
+                        "  ), 0) FROM messages"
+                        "  WHERE messages.session_id = sessions.id"
+                        ")"
+                    )
+                    cursor.execute("COMMIT")
+                except sqlite3.OperationalError:
+                    cursor.execute("ROLLBACK")
                     pass
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
@@ -2362,6 +2409,22 @@ class SessionDB:
                 return content
         return content
 
+    def message_exists(self, session_id: str, platform_message_id: str) -> bool:
+        """Check if a message with the given platform_message_id exists for a session.
+
+        Used by append_to_transcript idempotency guard (#47237).
+        Uses the existing idx_messages_platform_msg_id index.
+        Returns False on any DB error (falls through to INSERT — same as today).
+        """
+        try:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
+                (session_id, platform_message_id),
+            )
+            return cursor.fetchone() is not None
+        except Exception:
+            return False
+
     def append_message(
         self,
         session_id: str,
@@ -2417,7 +2480,7 @@ class SessionDB:
 
         def _do(conn):
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                """INSERT OR IGNORE INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed)
@@ -2442,6 +2505,26 @@ class SessionDB:
                 ),
             )
             msg_id = cursor.lastrowid
+
+            # If INSERT OR IGNORE found a duplicate, rowcount is 0.
+            # Skip counter update to avoid inflated counts (#47237).
+            # Explicitly SELECT the existing row's id: cursor.lastrowid is
+            # implementation-defined on ignored INSERTs (CPython returns
+            # the conflicting row's id, but this is not guaranteed).
+            if cursor.rowcount == 0:
+                if platform_message_id:
+                    existing = conn.execute(
+                        "SELECT id FROM messages "
+                        "WHERE session_id = ? AND platform_message_id = ?",
+                        (session_id, platform_message_id),
+                    ).fetchone()
+                    if existing:
+                        return (
+                            existing[0]
+                            if not isinstance(existing, sqlite3.Row)
+                            else existing["id"]
+                        )
+                return None
 
             # Update counters
             if num_tool_calls > 0:
