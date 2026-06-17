@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""
+wiki-search — Semantic search for markdown wikis using local ollama embeddings.
+
+Usage:
+  wiki-search index              Build / update search index
+  wiki-search <query>            Semantic search (default)
+  wiki-search --hybrid <query>   Hybrid search (vector + keyword RRF)
+  wiki-search --status           Show index status
+  wiki-search --reindex          Force rebuild all indexes
+  wiki-search --clean            Clear the search index
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import urllib.request
+import urllib.error
+
+# ── Defaults ────────────────────────────────────────────────────────
+DEFAULT_WIKI = os.environ.get("WIKI_PATH", os.path.expanduser("~/wiki"))
+CACHE_DIR = Path.home() / ".cache" / "wiki-search"
+INDEX_PATH = CACHE_DIR / "index.json"
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+EMBED_MODEL = os.environ.get("WIKI_EMBED_MODEL", "all-minilm")
+TOP_K = 10
+SECTION_MIN_CHARS = 20
+# ────────────────────────────────────────────────────────────────────
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Utils
+# ═══════════════════════════════════════════════════════════════════
+
+def log(msg: str):
+    print(f"  [{msg}]", file=sys.stderr)
+
+
+def fmt_path(path: str) -> str:
+    """Shorten absolute paths for display."""
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        return "~" + path[len(home):]
+    return path
+
+
+def ollama_embed(text: str) -> Optional[list[float]]:
+    """Generate an embedding vector via the ollama REST API.
+    Returns None if ollama is not available (caller should fall back)."""
+    payload = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/embeddings",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            return result["embedding"]
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError):
+        return None
+
+
+def ollama_status() -> dict:
+    """Check whether ollama is running and list available models."""
+    try:
+        req = urllib.request.Request(f"{OLLAMA_URL}/api/tags")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            models = [m["name"] for m in data.get("models", [])]
+            return {"running": True, "models": models}
+    except Exception:
+        return {"running": False, "models": []}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Index file format
+# ═══════════════════════════════════════════════════════════════════
+
+def load_index() -> dict:
+    if INDEX_PATH.exists():
+        return json.loads(INDEX_PATH.read_text())
+    return {"version": 2, "model": EMBED_MODEL, "files": {}}
+
+
+def save_index(index: dict):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    INDEX_PATH.write_text(json.dumps(index, ensure_ascii=False, indent=2))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Wiki parsing
+# ═══════════════════════════════════════════════════════════════════
+
+def parse_md_sections(text: str) -> list[dict]:
+    """Split .md content into sections by ## / ### headings."""
+    lines = text.split("\n")
+    sections, current_heading, current_level, current_lines = [], "", 0, []
+    in_fm = False
+
+    def flush():
+        content = "\n".join(current_lines).strip()
+        if len(content) < SECTION_MIN_CHARS:
+            return
+        slug = hashlib.md5(content[:100].encode()).hexdigest()[:8]
+        sections.append({
+            "heading": current_heading,
+            "level": current_level,
+            "content": content,
+            "slug": slug,
+        })
+
+    for i, line in enumerate(lines):
+        # Detect YAML frontmatter start
+        if i == 0 and line.startswith("---"):
+            in_fm = True
+            continue
+        if in_fm:
+            if line.startswith("---"):
+                in_fm = False
+            continue
+
+        m = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if m:
+            flush()
+            current_lines = []
+            current_level = len(m.group(1))
+            current_heading = m.group(2).strip()
+        else:
+            current_lines.append(line)
+
+    flush()
+    return sections
+
+
+def extract_title(text: str, filename: str) -> str:
+    """Extract title from YAML frontmatter, falling back to filename."""
+    m = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
+    if m:
+        fm = dict(re.findall(r"^(\w+):\s*(.+)$", m.group(1), re.MULTILINE))
+        return fm.get("title", filename)
+    return filename
+
+
+def should_reindex(rel_path: str, mtime: float, index: dict) -> bool:
+    finfo = index.get("files", {}).get(rel_path)
+    if finfo is None:
+        return True
+    return abs(mtime - finfo.get("mtime", 0)) > 1.0
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Indexing
+# ═══════════════════════════════════════════════════════════════════
+
+def index_file(abspath: Path, rel_path: str, index: dict):
+    """Generate embeddings for one file and store in the index."""
+    text = abspath.read_text(encoding="utf-8", errors="replace")
+    title = extract_title(text, abspath.stem)
+
+    # Strip frontmatter before parsing sections
+    body = re.sub(r"^---.*?\n---", "", text, count=1, flags=re.DOTALL).strip()
+    sections = parse_md_sections(body)
+
+    if not sections:
+        return
+
+    embedded = []
+    for sec in sections:
+        embed_text = sec["content"]
+        if sec["heading"]:
+            embed_text = f"{sec['heading']}: {embed_text}"
+        embedding = ollama_embed(embed_text[:2000])
+        if embedding is None:
+            log(f"  ⚠ ollama unavailable, storing keyword-only for: {sec['heading'] or rel_path}")
+        embedded.append({**sec, "embedding": embedding})
+
+    index["files"][rel_path] = {
+        "title": title,
+        "mtime": abspath.stat().st_mtime,
+        "size": len(text),
+        "sections": embedded,
+    }
+
+
+def cmd_index(wiki_path: str, force: bool = False):
+    """Build or update the search index for the given wiki directory."""
+    root = Path(wiki_path).expanduser().resolve()
+    if not root.exists():
+        print(f"Error: wiki path does not exist: {root}", file=sys.stderr)
+        sys.exit(1)
+
+    index = load_index()
+    md_files = sorted(
+        f for f in root.rglob("*.md") if not str(f.relative_to(root)).startswith("raw/")
+    )
+
+    if not md_files:
+        print("No .md files found to index.")
+        return
+
+    changed = 0
+    skipped = 0
+    for fp in md_files:
+        rel = str(fp.relative_to(root))
+        if force or should_reindex(rel, fp.stat().st_mtime, index):
+            log(f"indexing: {rel}")
+            index_file(fp, rel, index)
+            changed += 1
+        else:
+            skipped += 1
+
+    save_index(index)
+    total = len(index["files"])
+    n_sections = sum(len(f["sections"]) for f in index["files"].values())
+    print(f"\n✓ Done: {changed} indexed, {skipped} skipped ({total} files, {n_sections} sections)")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Search
+# ═══════════════════════════════════════════════════════════════════
+
+def cosine_sim(a: list[float], b: list[float]) -> float:
+    a_np, b_np = np.array(a, dtype=np.float32), np.array(b, dtype=np.float32)
+    na, nb = np.linalg.norm(a_np), np.linalg.norm(b_np)
+    return float(np.dot(a_np, b_np) / (na * nb)) if na > 0 and nb > 0 else 0.0
+
+
+def semantic_search(query: str, index: dict) -> list[dict]:
+    query_emb = ollama_embed(query)
+    if query_emb is None:
+        return []  # ollama unavailable — caller should fall back to keyword
+    results = []
+    for rel, finfo in index["files"].items():
+        for sec in finfo["sections"]:
+            # If section has no embedding (ollama was offline during index), skip semantic
+            if sec["embedding"] is None:
+                continue
+            score = cosine_sim(query_emb, sec["embedding"])
+            results.append({
+                "file": rel,
+                "title": finfo["title"],
+                "heading": sec["heading"],
+                "content": sec["content"][:300],
+                "score": score,
+            })
+    results.sort(key=lambda x: -x["score"])
+    return results[:TOP_K]
+
+
+def keyword_search(query: str, index: dict) -> list[dict]:
+    terms = query.lower().split()
+    results = []
+    for rel, finfo in index["files"].items():
+        for sec in finfo["sections"]:
+            text = sec["content"].lower()
+            cnt = sum(1 for t in terms if t in text)
+            if cnt > 0:
+                results.append({
+                    "file": rel,
+                    "title": finfo["title"],
+                    "heading": sec["heading"],
+                    "content": sec["content"],
+                    "score": cnt / len(terms),
+                })
+    results.sort(key=lambda x: -x["score"])
+    return results
+
+
+def hybrid_search(query: str, index: dict) -> list[dict]:
+    """RRF fusion of semantic + keyword results."""
+    sem = semantic_search(query, index)
+    kw = keyword_search(query, index)
+    K = 60
+    scores = {}
+    for rank, r in enumerate(sem + kw):
+        key = f"{r['file']}|{r['heading']}"
+        scores[key] = scores.get(key, 0) + 1 / (K + rank + 1)
+
+    seen = {}
+    for r in sem + kw:
+        key = f"{r['file']}|{r['heading']}"
+        if key not in seen:
+            seen[key] = {**r, "score": scores[key]}
+
+    results = sorted(seen.values(), key=lambda x: -x["score"])
+    if results:
+        max_s = max(r["score"] for r in results)
+        if max_s > 0:
+            for r in results:
+                r["score"] /= max_s
+    return results[:TOP_K]
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Display
+# ═══════════════════════════════════════════════════════════════════
+
+def print_results(results: list[dict], query: str):
+    if not results:
+        print("\nNo relevant results found.\n")
+        return
+
+    print(f"\n🔍 \"{query}\" — {len(results)} results\n")
+    max_s = max(r["score"] for r in results) or 1
+
+    for i, r in enumerate(results, 1):
+        bar = "█" * int((r["score"] / max_s) * 20)
+        pct = round(r["score"] * 100)
+
+        print(f"  {i:2d}. [{pct:3d}%] {bar:<20s}")
+        print(f"      📄 {r['file']}")
+        if r["heading"]:
+            print(f"      📑 {r['heading']}")
+        excerpt = r["content"].replace("\n", " ").strip()[:150]
+        print(f"      {excerpt}...\n")
+
+
+def cmd_search(query: str, mode: str = "semantic", wiki_path: str = ""):
+    index = load_index()
+    if not index.get("files"):
+        print("Index is empty. Run `wiki-search index` first.", file=sys.stderr)
+        sys.exit(1)
+
+    if mode == "hybrid":
+        results = hybrid_search(query, index)
+    else:
+        results = semantic_search(query, index)
+
+    # Fallback: if semantic search returned nothing (ollama unavailable), try keyword
+    if not results:
+        print("  ⚠ Ollama unavailable, falling back to keyword search.\n", file=sys.stderr)
+        results = keyword_search(query, index)
+
+    print_results(results, query)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Status
+# ═══════════════════════════════════════════════════════════════════
+
+def cmd_status(wiki_path: str):
+    index = load_index()
+    files = index.get("files", {})
+    n_secs = sum(len(f.get("sections", [])) for f in files.values())
+    total_chars = sum(f.get("size", 0) for f in files.values())
+    ost = ollama_status()
+
+    print(f"\n📊 wiki-search index status")
+    print(f"   Index:  {fmt_path(str(INDEX_PATH))}")
+    print(f"   Wiki:   {fmt_path(wiki_path)}")
+    print(f"   Model:  {index.get('model', '?')}")
+    print(f"   Files:  {len(files)}")
+    print(f"   Sections: {n_secs}")
+    print(f"   Chars:  {total_chars:,}")
+    print()
+    print(f"   Ollama:  {'✅ running' if ost['running'] else '❌ not running'}")
+    if ost["running"]:
+        has_it = any(m.startswith(EMBED_MODEL) for m in ost["models"])
+        print(f"   Model:   {'✅' if has_it else '❌'} {EMBED_MODEL}")
+        if ost["models"]:
+            print(f"   Available: {', '.join(ost['models'])}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CLI entrypoint
+# ═══════════════════════════════════════════════════════════════════
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="wiki-search",
+        description="Semantic search for markdown wikis using ollama embeddings.",
+        epilog="Examples:\n"
+               "  wiki-search index              # build index\n"
+               "  wiki-search reindex            # rebuild all\n"
+               "  wiki-search --hybrid 'query'   # semantic + keyword\n"
+               "  wiki-search 'natural query'    # semantic search (default)\n"
+               "  wiki-search --status           # index stats",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--wiki", default=DEFAULT_WIKI, help=f"Wiki path (default: {DEFAULT_WIKI})")
+    p.add_argument("--model", default=None, help="Override embedding model")
+    p.add_argument("--top-k", type=int, default=TOP_K, help=f"Results to return (default: {TOP_K})")
+    p.add_argument("--hybrid", action="store_true", help="Hybrid semantic + keyword search (RRF)")
+    p.add_argument("--status", action="store_true", help="Show index status")
+    p.add_argument("--reindex", action="store_true", help="Force rebuild all indexes")
+    p.add_argument("--clean", action="store_true", help="Delete the index entirely")
+    p.add_argument("query", nargs="*", help="Search query (plain text)")
+    return p
+
+
+def main():
+    global EMBED_MODEL, TOP_K
+
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.model:
+        EMBED_MODEL = args.model
+    if args.top_k:
+        TOP_K = args.top_k
+
+    wiki = os.path.expanduser(args.wiki)
+
+    # Mutually exclusive actions
+    if args.clean:
+        if INDEX_PATH.exists():
+            INDEX_PATH.unlink()
+            print("✓ Index cleared. Run `wiki-search index` to rebuild.")
+        else:
+            print("Index does not exist, nothing to clean.")
+        return
+
+    if args.status:
+        cmd_status(wiki)
+        return
+
+    if args.reindex:
+        cmd_index(wiki, force=True)
+        return
+
+    # If first positional arg is "index" or "reindex"
+    if args.query and args.query[0] in ("index", "reindex"):
+        force = args.query[0] == "reindex"
+        cmd_index(wiki, force=force)
+        return
+
+    if args.query and args.query[0] == "status":
+        cmd_status(wiki)
+        return
+
+    if args.query and args.query[0] == "clean":
+        if INDEX_PATH.exists():
+            INDEX_PATH.unlink()
+            print("Index cleared.")
+        return
+
+    # Default: search mode
+    if args.query:
+        query = " ".join(args.query)
+        mode = "hybrid" if args.hybrid else "semantic"
+        cmd_search(query, mode=mode, wiki_path=wiki)
+        return
+
+    # No command → show help
+    parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
