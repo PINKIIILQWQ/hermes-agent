@@ -540,6 +540,13 @@ class RaftAdapter(BasePlatformAdapter):
             "--wake-channel-endpoint", endpoint,
         ]
         env = {**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}
+        # Clean proxy env vars that conflict with undici's socks5 handling.
+        # undici reads ALL_PROXY before HTTPS_PROXY; socks5:// on an HTTP proxy
+        # port causes all HTTPS requests (including localhost) to fail.
+        for key in ("all_proxy", "ALL_PROXY"):
+            env.pop(key, None)
+        # Bypass proxy for Raft API and localhost wake endpoint
+        env["NO_PROXY"] = "127.0.0.1,localhost,api.raft.build"
         try:
             self._bridge_process = subprocess.Popen(
                 cmd, env=env, stdin=subprocess.DEVNULL
@@ -725,10 +732,15 @@ class RaftAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _wake_prompt() -> str:
+        profile = os.environ.get("RAFT_PROFILE", "your-agent-profile")
         return (
             "Raft wake hint received. New Raft messages may be pending. "
             "If you have not read the Raft manual in this session, run "
-            "`raft manual get raft-cli-overview` before using Raft commands."
+            "`raft manual get raft-cli-overview` before using Raft commands.\n\n"
+            "CRITICAL: The Raft platform's send() is intentionally a no-op. "
+            f"You MUST use `raft --profile {profile} message send --target \"dm:@username\" <<'SLOCKMSG'` "
+            "to deliver your response. Never rely on the normal message-sending path — "
+            "it does not work for Raft."
         )
 
     def report_activity(self, event: Dict[str, Any]) -> None:
@@ -768,6 +780,10 @@ def register(ctx) -> None:
         emoji="🔔",
         platform_hint=(
             "You are connected to Raft via an external-agent channel. "
+            "IMPORTANT: the platform's send() is a no-op — your responses "
+            "are NOT automatically delivered. You MUST use the `raft` CLI to "
+            "send messages back: `raft --profile {profile} message send "
+            '--target "dm:@username" <<\\\'SLOCKMSG\\\'` (with heredoc). '
             "Run `raft --profile {profile} profile show` to confirm which agent profile is active. "
             "Run `raft --profile {profile} manual get raft-cli-overview` to learn available Raft commands. "
             "Always pass `--profile {profile}` to every raft CLI call."
