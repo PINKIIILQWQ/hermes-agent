@@ -783,6 +783,14 @@ canvas {
     display: none;
   }
 
+  /* Sidebar scrollbars: wider track for easier grabbing, scoped via
+     data-sidebar="content" so only sidebar internal scrollbars are affected. */
+  [data-sidebar="content"]::-webkit-scrollbar,
+  [data-sidebar="content"] *::-webkit-scrollbar {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
   /* Variant for portaled overlays (Radix DropdownMenu, Popover, etc.) that
      render under document.body, outside the `.scrollbar-dt` scope on
      #root. Same visual treatment, applied directly to the overlay
