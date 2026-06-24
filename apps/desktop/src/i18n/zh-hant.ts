@@ -1856,6 +1856,7 @@ export const zhHant = defineLocale({
       showEarlier: '顯示較早的訊息',
       loadingResponse: 'Hermes 正在載入回覆',
       thinking: '思考中',
+      thinkingSteps: count => `${count} 個步驟`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '複製',

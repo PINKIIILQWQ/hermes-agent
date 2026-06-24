@@ -1961,6 +1961,7 @@ export const zh: Translations = {
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
       thinking: '思考中',
+      thinkingSteps: count => `${count} 个步骤`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '复制',

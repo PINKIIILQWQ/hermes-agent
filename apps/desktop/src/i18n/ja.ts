@@ -1917,6 +1917,7 @@ export const ja = defineLocale({
       showEarlier: '以前のメッセージを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
       thinking: '考え中',
+      thinkingSteps: count => `${count} ステップ`,
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,
       copy: 'コピー',

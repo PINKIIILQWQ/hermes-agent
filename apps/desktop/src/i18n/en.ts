@@ -1787,6 +1787,7 @@ export const en: Translations = {
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
       thinking: 'Thinking',
+      thinkingSteps: count => `${count} steps`,
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',
