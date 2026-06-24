@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import get_external_skills_dirs, is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,23 @@ def _skills_dir() -> Path:
     return get_hermes_home() / "skills"
 
 
+def _get_external_skills_root() -> Optional[Path]:
+    """Return the first valid external skills directory from config, if any."""
+    ext_dirs = get_external_skills_dirs()
+    if ext_dirs:
+        return ext_dirs[0].resolve()
+    return None
+
+
 def _usage_file() -> Path:
+    """Return the path to the usage telemetry sidecar.
+
+    Writes to the external skills directory when configured (knowledge-base
+    mode); falls back to the local ~/.hermes/skills/ otherwise.
+    """
+    ext_root = _get_external_skills_root()
+    if ext_root is not None:
+        return ext_root / ".usage.json"
     return _skills_dir() / ".usage.json"
 
 
@@ -123,6 +139,14 @@ def _usage_file_lock():
 
 
 def _archive_dir() -> Path:
+    """Return the path to the skill archive directory.
+
+    Uses external skills directory when configured (knowledge-base mode),
+    so archived skills are under git control; falls back to local otherwise.
+    """
+    ext_root = _get_external_skills_root()
+    if ext_root is not None:
+        return ext_root / ".archive"
     return _skills_dir() / ".archive"
 
 
@@ -375,6 +399,24 @@ def list_agent_created_skill_names() -> List[str]:
         if not _is_curator_managed_record(usage.get(name)):
             continue
         names.append(name)
+
+    # Also scan external skills directory for agent-created records
+    ext_root = _get_external_skills_root()
+    if ext_root is not None and ext_root.exists():
+        for skill_md in ext_root.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            try:
+                skill_md.relative_to(ext_root)
+            except ValueError:
+                continue
+            name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
+            if name in names or not usage.get(name):
+                continue
+            if is_protected_builtin(name) or name in hub or name in bundled:
+                continue
+            if _is_curator_managed_record(usage.get(name)):
+                names.append(name)
     return sorted(set(names))
 
 
@@ -803,16 +845,21 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
     """Locate the directory for a skill by its frontmatter `name:` field.
 
     Handles both flat (~/.hermes/skills/<skill>/SKILL.md) and category-nested
-    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts.
+    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts, plus external
+    skills directories.
     """
-    base = _skills_dir()
-    if not base.exists():
-        return None
-    for skill_md in base.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
+    bases = [_skills_dir()]
+    ext_root = _get_external_skills_root()
+    if ext_root is not None:
+        bases.append(ext_root)
+    for base in bases:
+        if not base.exists():
             continue
-        if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
-            return skill_md.parent
+        for skill_md in base.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
+                return skill_md.parent
     return None
 
 
