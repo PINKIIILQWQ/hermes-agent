@@ -1328,8 +1328,12 @@ function SidebarSessionsSection({
   }
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow
-  // to avoid a double scroll container.
-  const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
+  // to avoid a double scroll container. When virtualized, the inner scroller
+  // already carries pr-2.5 for scrollbar clearance; removing it from the
+  // wrapper prevents double-padding that would narrow the virtualized list.
+  const resolvedContentClassName = flatVirtualized
+    ? cn(contentClassName.replace(/pr-2\.5/g, ''), 'overflow-y-visible')
+    : contentClassName
 
   return (
     <SidebarGroup className={rootClassName}>
