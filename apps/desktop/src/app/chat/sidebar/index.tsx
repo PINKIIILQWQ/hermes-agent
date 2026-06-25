@@ -1332,7 +1332,7 @@ function SidebarSessionsSection({
   // already carries pr-2.5 for scrollbar clearance; removing it from the
   // wrapper prevents double-padding that would narrow the virtualized list.
   const resolvedContentClassName = flatVirtualized
-    ? cn(contentClassName.replace(/pr-2\.5/g, ''), 'overflow-y-visible')
+    ? cn((contentClassName ?? '').replace(/pr-2\.5/g, ''), 'overflow-y-visible')
     : contentClassName
 
   return (
