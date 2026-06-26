@@ -20,6 +20,7 @@ import {
   stopBackgroundProcess
 } from '@/store/composer-status'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
+import { $workingSessionIds } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
@@ -69,6 +70,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   const itemsBySession = useStore($statusItemsBySession)
   const previewsBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const workingSessionIds = useStore($workingSessionIds)
 
   const groups = useMemo(
     () => groupStatusItems(sessionId ? (itemsBySession[sessionId] ?? []) : []),
@@ -76,6 +78,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   )
 
   const previews = sessionId ? (previewsBySession[sessionId] ?? []) : []
+  const sessionWorking = !!sessionId && workingSessionIds.includes(sessionId)
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream.
@@ -145,6 +148,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
             key={item.id}
             onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
             onOpen={() => openSubagent(item)}
+            sessionWorking={sessionWorking}
             onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
           />
         ))}

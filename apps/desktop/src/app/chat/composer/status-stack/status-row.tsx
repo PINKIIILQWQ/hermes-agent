@@ -27,9 +27,9 @@ const TODO_GLYPHS: Record<Exclude<TodoStatus, 'in_progress' | 'pending'>, { icon
   completed: { icon: 'pass-filled', tone: 'text-emerald-500/80' }
 }
 
-// Left slot: braille spinner while running, otherwise a small status dot
+// Left slot: braille spinner while actively running, otherwise a status glyph
 // (green = done, red = failed) so the slot is always filled and rows align.
-function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']): ReactNode {
+function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack'], sessionWorking: boolean): ReactNode {
   if (item.todoStatus === 'pending') {
     return (
       <span
@@ -45,7 +45,9 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
     return <Codicon className={glyph.tone} name={glyph.icon} size="0.8rem" />
   }
 
-  if (item.state === 'running') {
+  const isTodoInProgress = item.todoStatus === 'in_progress'
+
+  if (item.state === 'running' && (sessionWorking || !isTodoInProgress)) {
     return (
       <GlyphSpinner
         ariaLabel={s.running}
@@ -53,6 +55,10 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
         spinner="braille"
       />
     )
+  }
+
+  if (isTodoInProgress) {
+    return <span aria-hidden className="box-border size-[0.7rem] rounded-full border border-muted-foreground/60" />
   }
 
   return (
@@ -70,6 +76,9 @@ interface StatusItemRowProps {
   /** Open the subagent's own session window, livestreamed by the gateway's
    *  child-session mirror (Agents view fallback for older gateways). */
   onOpen?: () => void
+  /** Whether this item's owning session currently has a running turn. Gates
+   *  the todo in-progress spinner so it can settle between turns. */
+  sessionWorking?: boolean
   /** Cancel a running background task. */
   onStop?: (id: string) => void
 }
@@ -79,7 +88,13 @@ interface StatusItemRowProps {
  * Memoised + keyed by id so parent re-renders never remount it (the spinner
  * keeps ticking instead of resetting).
  */
-export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOpen, onStop }: StatusItemRowProps) {
+export const StatusItemRow = memo(function StatusItemRow({
+  item,
+  onDismiss,
+  onOpen,
+  onStop,
+  sessionWorking = false
+}: StatusItemRowProps) {
   const { t } = useI18n()
   const s = t.statusStack
   const [outputOpen, setOutputOpen] = useState(false)
@@ -100,7 +115,7 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   return (
     <Fragment>
       <StatusRow
-        leading={leadingGlyph(item, s)}
+        leading={leadingGlyph(item, s, sessionWorking)}
         onActivate={onActivate}
         trailing={
           action ? (
