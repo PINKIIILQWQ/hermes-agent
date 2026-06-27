@@ -5,7 +5,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages } from '@/hermes'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
+import {
+  $currentCwd,
+  $currentUsage,
+  $messages,
+  $resumeFailedSessionId,
+  setCurrentUsage,
+  setMessages,
+  setResumeFailedSessionId
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -162,6 +170,7 @@ describe('resumeSession failure recovery', () => {
     cleanup()
     setResumeFailedSessionId(null)
     setMessages([])
+    setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
     vi.restoreAllMocks()
   })
 
@@ -255,6 +264,44 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('refreshes context usage after a cold resume binds a runtime session', async () => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-usage', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      if (method === 'session.usage') {
+        expect(params).toEqual({ session_id: 'runtime-usage' })
+
+        return {
+          context_max: 200_000,
+          context_percent: 42,
+          context_used: 84_000,
+          input: 80_000,
+          output: 4_000,
+          total: 84_000
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    await runResume(requestGateway)
+
+    await waitFor(() =>
+      expect($currentUsage.get()).toEqual(
+        expect.objectContaining({
+          context_max: 200_000,
+          context_percent: 42,
+          context_used: 84_000
+        })
+      )
+    )
+    expect(requestGateway).toHaveBeenCalledWith('session.usage', { session_id: 'runtime-usage' })
   })
 
   it('resumes via the gateway default (deferred build) — not lazy, no eager opt-out', async () => {

@@ -823,6 +823,21 @@ export function useSessionActions({
           }),
           storedSessionId
         )
+
+        const resumedSessionId = resumed.session_id
+
+        void requestGateway<UsageStats>('session.usage', { session_id: resumedSessionId })
+          .then(usage => {
+            if (
+              usage &&
+              resumeRequestRef.current === requestId &&
+              selectedStoredSessionIdRef.current === storedSessionId &&
+              activeSessionIdRef.current === resumedSessionId
+            ) {
+              setCurrentUsage(current => ({ ...current, ...usage }))
+            }
+          })
+          .catch(() => undefined)
       } catch (err) {
         if (!isCurrentResume()) {
           return
