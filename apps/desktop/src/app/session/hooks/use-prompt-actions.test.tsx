@@ -5,7 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
+import {
+  $busy,
+  $connection,
+  $currentUsage,
+  $messages,
+  $sessions,
+  setCurrentUsage,
+  setMessages,
+  setSessions
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
@@ -356,22 +365,26 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 })
 
 describe('usePromptActions /compress', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
   afterEach(() => {
     cleanup()
+    setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
+    setMessages([])
     vi.restoreAllMocks()
   })
 
-  it('routes through session.compress with a long timeout and renders the compression summary', async () => {
+  it('shows compression progress, refreshes context usage, and renders the final summary without fallback noise', async () => {
     const states: Record<string, unknown>[] = []
+    let resolveCompress: (value: unknown) => void = () => undefined
+    const compressResult = new Promise(resolve => {
+      resolveCompress = resolve
+    })
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.compress') {
-        return {
-          removed: 5,
-          summary: {
-            headline: 'Compressed: 8 → 3 messages',
-            token_line: 'Approx request size: ~12,000 → ~4,000 tokens'
-          }
-        } as never
+        return (await compressResult) as never
       }
 
       throw new Error(`unexpected method: ${method}`)
@@ -387,13 +400,56 @@ describe('usePromptActions /compress', () => {
       />
     )
 
-    await handle!.submitText('/compress')
+    const submitted = handle!.submitText('/compress')
+
+    await waitFor(() => {
+      expect(renderedTextFrom(states)).toContain('compressing context...')
+    })
+
+    resolveCompress({
+      info: {
+        title: 'Compressed session',
+        usage: {
+          context_max: 100_000,
+          context_percent: 4,
+          context_used: 4_000,
+          input: 12_000,
+          output: 0,
+          total: 12_000
+        }
+      },
+      messages: [{ content: 'compressed transcript', role: 'system' }],
+      removed: 5,
+      summary: {
+        headline: 'Compressed: 8 → 3 messages',
+        token_line: 'Approx request size: ~12,000 → ~4,000 tokens'
+      }
+    })
+
+    await submitted
 
     expect(requestGateway).toHaveBeenCalledWith('session.compress', { session_id: RUNTIME_SESSION_ID }, 120_000)
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
-    expect(renderedTextFrom(states)).toContain('Compressed: 8 → 3 messages')
-    expect(renderedTextFrom(states)).toContain('Approx request size: ~12,000 → ~4,000 tokens')
+    const rendered = renderedTextFrom(states)
+    expect(rendered).toContain('Compressed: 8 → 3 messages')
+    expect(rendered).toContain('Approx request size: ~12,000 → ~4,000 tokens')
+    expect(rendered).toContain('compressed transcript')
+    expect(rendered).not.toContain('not a quick/plugin/skill command: compress')
+    expect($currentUsage.get()).toEqual(
+      expect.objectContaining({
+        context_max: 100_000,
+        context_percent: 4,
+        context_used: 4_000,
+        total: 12_000
+      })
+    )
+    expect(
+      $messages
+        .get()
+        .some(message => message.parts.some(part => 'text' in part && part.text === 'compressed transcript'))
+    ).toBe(true)
+    expect($sessions.get()[0]?.title).toBe('Compressed session')
   })
 
   it('passes a focus topic through to session.compress', async () => {

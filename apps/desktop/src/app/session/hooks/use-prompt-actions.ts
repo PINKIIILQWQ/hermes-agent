@@ -5,7 +5,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { getProfiles, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
-import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { branchGroupForUser, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import {
   optimisticAttachmentRef,
   parseCommandDispatch,
@@ -54,6 +54,7 @@ import {
   $yoloActive,
   setAwaitingResponse,
   setBusy,
+  setCurrentUsage,
   setMessages,
   setModelPickerOpen,
   setSessionPickerOpen,
@@ -1126,6 +1127,7 @@ export function usePromptActions({
           const focusTopic = ctx.arg.trim()
 
           try {
+            renderSlashOutput(focusTopic ? `compressing context for: ${focusTopic}` : 'compressing context...')
             const result = await requestGateway<SessionCompressResponse>(
               'session.compress',
               {
@@ -1134,6 +1136,32 @@ export function usePromptActions({
               },
               SESSION_COMPRESS_TIMEOUT_MS
             )
+
+            if (result?.info?.usage) {
+              setCurrentUsage(current => ({ ...current, ...result.info!.usage }))
+            }
+
+            if (result?.info?.title !== undefined) {
+              setSessions(prev =>
+                prev.map(session =>
+                  session.id === sessionId ? { ...session, title: result.info!.title || null } : session
+                )
+              )
+            }
+
+            if (Array.isArray(result?.messages)) {
+              const compressedMessages = toChatMessages(result.messages)
+              setMessages(compressedMessages)
+              updateSessionState(
+                sessionId,
+                state => ({
+                  ...state,
+                  messages: compressedMessages
+                }),
+                selectedStoredSessionIdRef.current
+              )
+            }
+
             const summary = result?.summary
 
             if (summary?.headline) {

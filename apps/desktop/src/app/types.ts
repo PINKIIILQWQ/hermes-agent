@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
   text: string
@@ -57,6 +58,11 @@ export interface SessionCompressResponse {
   after_tokens?: number
   before_messages?: number
   before_tokens?: number
+  info?: {
+    title?: string
+    usage?: Partial<UsageStats>
+  }
+  messages?: SessionMessage[]
   removed?: number
   summary?: {
     headline?: string
