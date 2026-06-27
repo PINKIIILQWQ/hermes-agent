@@ -5,7 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
+import {
+  $busy,
+  $connection,
+  $currentUsage,
+  $messages,
+  $sessions,
+  setCurrentUsage,
+  setMessages,
+  setSessions
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
@@ -63,7 +72,12 @@ function Harness({
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
   storedSessionId?: null | string
@@ -116,6 +130,18 @@ function Harness({
   }, [actions.cancelRun, actions.restoreToMessage, actions.steerPrompt, actions.submitText, onReady])
 
   return null
+}
+
+function renderedTextFrom(states: Record<string, unknown>[]): string {
+  return states
+    .flatMap(state => {
+      const messages = Array.isArray(state.messages)
+        ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+        : []
+
+      return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+    })
+    .join('\n')
 }
 
 describe('usePromptActions /title', () => {
@@ -270,6 +296,211 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
+  })
+
+  it('surfaces the slash.exec failure when command.dispatch only adds unknown-command noise', async () => {
+    const states: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('slash worker timed out')
+      }
+
+      if (method === 'command.dispatch') {
+        throw new Error('not a quick/plugin/skill command: status')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/status')
+
+    expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'status' }))
+    expect(requestGateway).toHaveBeenCalledWith('command.dispatch', {
+      arg: '',
+      name: 'status',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(renderedTextFrom(states)).toContain('error: /status failed: slash worker timed out')
+  })
+
+  it('still reports genuine command.dispatch failures for extension commands', async () => {
+    const states: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('extension command: use command.dispatch')
+      }
+
+      if (method === 'command.dispatch') {
+        throw new Error('extension command failed')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/my-skill')
+
+    expect(renderedTextFrom(states)).toContain('error: extension command failed')
+    expect(renderedTextFrom(states)).not.toContain('/my-skill failed')
+  })
+})
+
+describe('usePromptActions /compress', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
+    setMessages([])
+    vi.restoreAllMocks()
+  })
+
+  it('shows compression progress, refreshes context usage, and renders the final summary without fallback noise', async () => {
+    const states: Record<string, unknown>[] = []
+    let resolveCompress: (value: unknown) => void = () => undefined
+    const compressResult = new Promise(resolve => {
+      resolveCompress = resolve
+    })
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.compress') {
+        return (await compressResult) as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const submitted = handle!.submitText('/compress')
+
+    await waitFor(() => {
+      expect(renderedTextFrom(states)).toContain('compressing context...')
+    })
+
+    resolveCompress({
+      info: {
+        title: 'Compressed session',
+        usage: {
+          context_max: 100_000,
+          context_percent: 4,
+          context_used: 4_000,
+          input: 12_000,
+          output: 0,
+          total: 12_000
+        }
+      },
+      messages: [{ content: 'compressed transcript', role: 'system' }],
+      removed: 5,
+      summary: {
+        headline: 'Compressed: 8 → 3 messages',
+        token_line: 'Approx request size: ~12,000 → ~4,000 tokens'
+      }
+    })
+
+    await submitted
+
+    expect(requestGateway).toHaveBeenCalledWith('session.compress', { session_id: RUNTIME_SESSION_ID }, 0)
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    const rendered = renderedTextFrom(states)
+    expect(rendered).toContain('Compressed: 8 → 3 messages')
+    expect(rendered).toContain('Approx request size: ~12,000 → ~4,000 tokens')
+    expect(rendered).toContain('compressed transcript')
+    expect(rendered).not.toContain('not a quick/plugin/skill command: compress')
+    expect($currentUsage.get()).toEqual(
+      expect.objectContaining({
+        context_max: 100_000,
+        context_percent: 4,
+        context_used: 4_000,
+        total: 12_000
+      })
+    )
+    expect(
+      $messages
+        .get()
+        .some(message => message.parts.some(part => 'text' in part && part.text === 'compressed transcript'))
+    ).toBe(true)
+    expect($sessions.get()[0]?.title).toBe('Compressed session')
+  })
+
+  it('passes a focus topic through to session.compress', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.compress') {
+        return { removed: 0 } as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/compress the auth refactor')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.compress',
+      {
+        focus_topic: 'the auth refactor',
+        session_id: RUNTIME_SESSION_ID
+      },
+      0
+    )
+  })
+
+  it('surfaces session.compress busy errors directly', async () => {
+    const states: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.compress') {
+        throw new Error('session busy — /interrupt the current turn before /compress')
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/compress')
+
+    expect(renderedTextFrom(states)).toContain('error: session busy — /interrupt the current turn before /compress')
   })
 })
 
