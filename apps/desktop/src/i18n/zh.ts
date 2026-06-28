@@ -2157,6 +2157,7 @@ export const zh: Translations = {
       resumeWhenBackgroundDone: count =>
         count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',
+      thinkingSteps: count => `${count} 个步骤`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '复制',

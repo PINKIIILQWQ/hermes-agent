@@ -21,6 +21,7 @@ import {
   type DragEvent as ReactDragEvent,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -65,6 +66,7 @@ import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/mar
 import { ThreadMessageList } from '@/components/assistant-ui/thread-list'
 import { ThreadTimeline } from '@/components/assistant-ui/thread-timeline'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
+import { ThinkingPanel, ThinkingPanelContext } from '@/components/assistant-ui/thinking-panel'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -350,7 +352,10 @@ const AssistantMessage: FC<{
         data-slot="aui_assistant-message-content"
       >
         {/* Todos render in the composer status stack now, not inline. */}
-        <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+        <ThinkingPanel>
+          <MessagePrimitive.Parts components={THINKING_ONLY_COMPONENTS} />
+        </ThinkingPanel>
+        <MessagePrimitive.Parts components={TEXT_ONLY_COMPONENTS} />
         {isRunning && <StreamStallIndicator />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
@@ -645,6 +650,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   endIndex,
   startIndex
 }) => {
+  const insidePanel = useContext(ThinkingPanelContext)
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
 
@@ -671,6 +677,12 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 
   if (!hasContent) {
     return null
+  }
+
+  // Inside the message-level ThinkingPanel: skip the per-group disclosure
+  // header so reasoning text renders inline under the unified panel.
+  if (insidePanel) {
+    return <>{children}</>
   }
 
   return (
@@ -708,6 +720,26 @@ const MESSAGE_PARTS_COMPONENTS = {
   Text: MarkdownText,
   ToolGroup: ToolGroupSlot,
   tools: { Fallback: ChainToolFallback }
+} as const
+
+// Derived: only reasoning + tool parts (rendered inside ThinkingPanel).
+// Text is suppressed so the panel only wraps thinking/tool content and can
+// collapse without hiding the assistant's response.
+const THINKING_ONLY_COMPONENTS = {
+  ...MESSAGE_PARTS_COMPONENTS,
+  Text: () => null
+} as const
+
+// Derived: only text parts (rendered outside ThinkingPanel so the response
+// text is always visible, even when the panel is collapsed).
+const TEXT_ONLY_COMPONENTS: {
+  [K in keyof typeof MESSAGE_PARTS_COMPONENTS]: (typeof MESSAGE_PARTS_COMPONENTS)[K] | undefined
+} = {
+  ...MESSAGE_PARTS_COMPONENTS,
+  Reasoning: undefined,
+  ReasoningGroup: undefined,
+  ToolGroup: undefined,
+  tools: undefined
 } as const
 
 const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
