@@ -1,4 +1,4 @@
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
@@ -15,7 +15,7 @@ import {
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { type ComposerAttachment, setComposerDraft } from '@/store/composer'
-import { notify, notifyError } from '@/store/notifications'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -103,6 +103,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     submitPromptText,
     updateSessionState
   } = deps
+  const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
@@ -285,10 +286,21 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           const { render: renderSlashOutput, sessionId } = resolved
           const focusTopic = ctx.arg.trim()
+          const noticeId = `session-compress:${sessionId}`
+
+          if (compressInFlightRef.current.has(sessionId)) {
+            return
+          }
+
+          compressInFlightRef.current.add(sessionId)
+          notify({
+            durationMs: 0,
+            id: noticeId,
+            kind: 'info',
+            message: focusTopic ? `compressing context for: ${focusTopic}` : 'compressing context...'
+          })
 
           try {
-            renderSlashOutput(focusTopic ? `compressing context for: ${focusTopic}` : 'compressing context...')
-
             const result = await requestGateway<SessionCompressResponse>(
               'session.compress',
               {
@@ -320,19 +332,30 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             }
 
             if (result?.summary?.headline) {
-              renderSlashOutput(
-                [result.summary.headline, result.summary.token_line, result.summary.note]
+              notify({
+                durationMs: 5_000,
+                id: noticeId,
+                kind: 'success',
+                message: [result.summary.headline, result.summary.token_line, result.summary.note]
                   .filter((line): line is string => Boolean(line))
                   .join('\n')
-              )
+              })
 
               return
             }
 
             const removed = result?.removed ?? 0
-            renderSlashOutput(removed > 0 ? `compressed ${removed} messages` : 'nothing to compress')
+            notify({
+              durationMs: 5_000,
+              id: noticeId,
+              kind: 'success',
+              message: removed > 0 ? `compressed ${removed} messages` : 'nothing to compress'
+            })
           } catch (err) {
+            dismissNotification(noticeId)
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          } finally {
+            compressInFlightRef.current.delete(sessionId)
           }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval

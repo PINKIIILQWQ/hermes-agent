@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $busy,
   $connection,
@@ -69,6 +70,7 @@ interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
+  submitTextRaw: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
   submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
 }
 
@@ -153,6 +155,7 @@ function Harness({
         act(async () => actions.restoreToMessage(...args)) as Promise<void>,
       steerPrompt: (...args: Parameters<typeof actions.steerPrompt>) =>
         act(async () => actions.steerPrompt(...args)) as Promise<boolean>,
+      submitTextRaw: actions.submitText,
       submitText: (...args: Parameters<typeof actions.submitText>) =>
         act(async () => actions.submitText(...args)) as Promise<boolean>
     })
@@ -168,6 +171,7 @@ describe('usePromptActions /title', () => {
 
   afterEach(() => {
     cleanup()
+    clearNotifications()
     vi.restoreAllMocks()
   })
 
@@ -431,6 +435,7 @@ describe('usePromptActions /compress session isolation', () => {
 
   afterEach(() => {
     cleanup()
+    clearNotifications()
     setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
     setMessages([])
     vi.restoreAllMocks()
@@ -483,7 +488,7 @@ describe('usePromptActions /compress session isolation', () => {
     expect($currentUsage.get()).toEqual({ calls: 7, input: 70, output: 30, total: 100 })
   })
 
-  it('replaces the target transcript with the authoritative compression result and renders its summary', async () => {
+  it('leaves the target transcript equal to the authoritative compression result', async () => {
     const states: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -517,15 +522,71 @@ describe('usePromptActions /compress session isolation', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.compress', { session_id: RUNTIME_SESSION_ID }, 0)
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
 
-    const renderedText = states
-      .flatMap(state => state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+    const finalMessages = states[states.length - 1]?.messages as Array<{ parts?: Array<{ text?: string }> }>
+    const renderedText = finalMessages
       .flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
       .join('\n')
 
-    expect(renderedText).toContain('compressed transcript')
-    expect(renderedText).toContain('Compressed: 8 → 3 messages')
-    expect(renderedText).toContain('Approx request size: ~12,000 → ~4,000 tokens')
+    expect(renderedText).toBe('compressed transcript')
     expect($currentUsage.get()).toEqual(expect.objectContaining({ context_used: 4_000, total: 12_000 }))
+  })
+
+  it('coalesces repeated compression requests for one runtime session', async () => {
+    let resolveCompress: (value: unknown) => void = () => undefined
+    const compressResult = new Promise(resolve => {
+      resolveCompress = resolve
+    })
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.compress') {
+        return (await compressResult) as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const first = handle!.submitTextRaw('/compress')
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+
+    const second = handle!.submitTextRaw('/compress')
+    try {
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(1))
+    } finally {
+      resolveCompress({ messages: [{ content: 'compressed transcript', role: 'system' }] })
+      await Promise.all([first, second])
+    }
+  })
+
+  it('shows compression progress outside the authoritative transcript', async () => {
+    let resolveCompress: (value: unknown) => void = () => undefined
+    const compressResult = new Promise(resolve => {
+      resolveCompress = resolve
+    })
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.compress') {
+        return (await compressResult) as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const submitted = handle!.submitTextRaw('/compress')
+    await waitFor(() => expect($notifications.get().some(item => item.message === 'compressing context...')).toBe(true))
+    resolveCompress({ messages: [{ content: 'compressed transcript', role: 'system' }] })
+    await submitted
   })
 
   it('passes a focus topic to session.compress', async () => {
