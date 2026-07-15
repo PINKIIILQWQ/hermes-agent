@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import time
@@ -2362,6 +2363,55 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_task_id_copy_control_has_stateful_keyboard_behavior():
+    """Task IDs must copy through one keyboard-safe, stateful control."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "const [idCopied, setIdCopied] = useState(false);" in js
+    assert "const copyTaskId = function () {" in js
+    assert "navigator.clipboard && navigator.clipboard.writeText(t.id)" in js
+    assert 'window.prompt("Copy:", t.id)' in js
+    assert re.search(
+        r"const handleIdKeyDown = function \(e\) \{\s*"
+        r"if \(e\.key === \"Enter\" \|\| e\.key === \" \"\) \{\s*"
+        r"e\.preventDefault\(\);\s*"
+        r"e\.stopPropagation\(\);\s*"
+        r"copyTaskId\(\);\s*"
+        r"\}\s*\};",
+        js,
+    )
+    assert re.search(
+        r"onClick: function \(e\) \{\s*"
+        r"e\.stopPropagation\(\);\s*"
+        r"copyTaskId\(\);\s*"
+        r"\},",
+        js,
+    )
+    assert (
+        'title: "Click to copy task ID",\n'
+        '              role: "button",\n'
+        '              tabIndex: 0,\n'
+        '              "aria-label": `Copy task ID ${t.id}`,'
+    ) in js
+    assert "onMouseDown: function (e) { e.stopPropagation(); }," in js
+
+
+def test_dashboard_task_id_copy_control_uses_fallback_and_feedback_styles():
+    """The copy control must expose copied feedback with dashboard-local CSS."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert 'window.prompt("Copy:", t.id)' in js
+    assert '"hermes-kanban-card-id-clickable"' in js
+    assert '"hermes-kanban-card-id-clickable--copied"' in js
+    assert 'idCopied ? "Copied" : "Copy ID"' in js
+    assert ".hermes-kanban-card-id-clickable {" in css
+    assert ".hermes-kanban-card-id-clickable:hover {" in css
+    assert ".hermes-kanban-card-id-clickable--copied {" in css
 
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards

@@ -2606,6 +2606,32 @@
     const { t: i18n } = useI18n();
     const t = props.task;
     const cardRef = useRef(null);
+    const [idCopied, setIdCopied] = useState(false);
+
+    const copyTaskId = function () {
+      const fallback = function () { window.prompt("Copy:", t.id); };
+      try {
+        const p = navigator.clipboard && navigator.clipboard.writeText(t.id);
+        if (p && p.then) {
+          p.then(function () {
+            setIdCopied(true);
+            setTimeout(function () { setIdCopied(false); }, 2000);
+          }).catch(fallback);
+        } else {
+          fallback();
+        }
+      } catch (_e) {
+        fallback();
+      }
+    };
+
+    const handleIdKeyDown = function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        e.stopPropagation();
+        copyTaskId();
+      }
+    };
 
     useEffect(function () {
       return attachTouchDrag(cardRef.current, t.id);
@@ -2691,8 +2717,26 @@
                 "aria-label": `Select task ${t.id}`,
               }),
             ),
-            h("span", { className: "hermes-kanban-card-id",
-                        title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
+            h("span", {
+              className: cn(
+                "hermes-kanban-card-id-clickable",
+                idCopied ? "hermes-kanban-card-id-clickable--copied" : "",
+              ),
+              onClick: function (e) {
+                e.stopPropagation();
+                copyTaskId();
+              },
+              title: "Click to copy task ID",
+              role: "button",
+              tabIndex: 0,
+              "aria-label": `Copy task ID ${t.id}`,
+              onMouseDown: function (e) { e.stopPropagation(); },
+              onKeyDown: handleIdKeyDown,
+            },
+              h("span", { className: "hermes-kanban-card-id" }, t.id),
+              " ",
+              idCopied ? "Copied" : "Copy ID",
+            ),
             t.warnings && t.warnings.count > 0
               ? h("span", {
                   className: cn(
