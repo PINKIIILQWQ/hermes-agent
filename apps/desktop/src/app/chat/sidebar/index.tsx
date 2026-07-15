@@ -1094,7 +1094,7 @@ export function ChatSidebar({
       )}
       collapsible="none"
     >
-      <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
+      <SidebarContent className="gap-0 overflow-hidden bg-transparent pl-2.5">
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
@@ -1205,7 +1205,7 @@ export function ChatSidebar({
         )}
 
         {showSessionSections && (
-          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>
+          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75 [scrollbar-gutter:stable]', SCROLL_Y)}>
             {trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
