@@ -397,10 +397,14 @@
   // standard `drop` event and our `hermes-kanban:drop` event.
   // -------------------------------------------------------------------------
 
+  function isNoDragOrigin(target) {
+    return Boolean(target && target.closest && target.closest("[data-kanban-no-drag]"));
+  }
+
   function attachTouchDrag(el, taskId) {
     if (!el) return;
     function onDown(e) {
-      if (e.pointerType !== "touch") return;
+      if (e.pointerType !== "touch" || isNoDragOrigin(e.target)) return;
       e.preventDefault();
       const proxy = el.cloneNode(true);
       proxy.classList.add("hermes-kanban-touch-proxy");
@@ -2607,6 +2611,7 @@
     const t = props.task;
     const cardRef = useRef(null);
     const [idCopied, setIdCopied] = useState(false);
+    const copyFeedbackTimeoutRef = useRef(null);
 
     const copyTaskId = function () {
       const fallback = function () { window.prompt("Copy:", t.id); };
@@ -2614,8 +2619,11 @@
         const p = navigator.clipboard && navigator.clipboard.writeText(t.id);
         if (p && p.then) {
           p.then(function () {
+            if (copyFeedbackTimeoutRef.current) {
+              clearTimeout(copyFeedbackTimeoutRef.current);
+            }
             setIdCopied(true);
-            setTimeout(function () { setIdCopied(false); }, 2000);
+            copyFeedbackTimeoutRef.current = setTimeout(function () { setIdCopied(false); }, 2000);
           }).catch(fallback);
         } else {
           fallback();
@@ -2634,10 +2642,22 @@
     };
 
     useEffect(function () {
+      return function () {
+        if (copyFeedbackTimeoutRef.current) {
+          clearTimeout(copyFeedbackTimeoutRef.current);
+        }
+      };
+    }, []);
+
+    useEffect(function () {
       return attachTouchDrag(cardRef.current, t.id);
     }, [t.id]);
 
     const handleDragStart = function (e) {
+      if (isNoDragOrigin(e.target)) {
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.setData(MIME_TASK, t.id);
       e.dataTransfer.effectAllowed = "move";
       const selectedCards = document.querySelectorAll(".hermes-kanban-card--selected");
@@ -2727,6 +2747,7 @@
                 copyTaskId();
               },
               title: "Click to copy task ID",
+              "data-kanban-no-drag": true,
               role: "button",
               tabIndex: 0,
               "aria-label": `Copy task ID ${t.id}`,

@@ -2391,8 +2391,7 @@ def test_dashboard_task_id_copy_control_has_stateful_keyboard_behavior():
         js,
     )
     assert (
-        'title: "Click to copy task ID",\n'
-        '              role: "button",\n'
+        'role: "button",\n'
         '              tabIndex: 0,\n'
         '              "aria-label": `Copy task ID ${t.id}`,'
     ) in js
@@ -2412,6 +2411,54 @@ def test_dashboard_task_id_copy_control_uses_fallback_and_feedback_styles():
     assert ".hermes-kanban-card-id-clickable {" in css
     assert ".hermes-kanban-card-id-clickable:hover {" in css
     assert ".hermes-kanban-card-id-clickable--copied {" in css
+
+
+def test_dashboard_task_id_copy_control_never_starts_parent_drag():
+    """Copying an ID must not activate the card's touch or HTML drag handlers."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert '"data-kanban-no-drag": true,' in js
+    assert re.search(
+        r"function isNoDragOrigin\(target\) \{.*?"
+        r"target\.closest\(\"\[data-kanban-no-drag\]\"\)",
+        js,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"function onDown\(e\) \{\s*"
+        r"if \(e\.pointerType !== \"touch\" \|\| isNoDragOrigin\(e\.target\)\) return;",
+        js,
+    )
+    assert re.search(
+        r"const handleDragStart = function \(e\) \{\s*"
+        r"if \(isNoDragOrigin\(e\.target\)\) \{\s*"
+        r"e\.preventDefault\(\);\s*return;",
+        js,
+    )
+
+
+def test_dashboard_task_id_copy_feedback_uses_one_lifecycle_bound_timer():
+    """A later copy must replace, and unmount must clear, the feedback timer."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "const copyFeedbackTimeoutRef = useRef(null);" in js
+    assert re.search(
+        r"if \(copyFeedbackTimeoutRef\.current\) \{\s*"
+        r"clearTimeout\(copyFeedbackTimeoutRef\.current\);\s*"
+        r"\}",
+        js,
+    )
+    assert "copyFeedbackTimeoutRef.current = setTimeout(function () { setIdCopied(false); }, 2000);" in js
+    assert re.search(
+        r"useEffect\(function \(\) \{\s*"
+        r"return function \(\) \{\s*"
+        r"if \(copyFeedbackTimeoutRef\.current\) \{\s*"
+        r"clearTimeout\(copyFeedbackTimeoutRef\.current\);",
+        js,
+        re.DOTALL,
+    )
 
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
