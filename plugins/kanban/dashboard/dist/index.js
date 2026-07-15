@@ -2610,6 +2610,7 @@
     const { t: i18n } = useI18n();
     const t = props.task;
     const cardRef = useRef(null);
+    const pointerOriginIsNoDragRef = useRef(false);
     const [idCopied, setIdCopied] = useState(false);
     const copyFeedbackTimeoutRef = useRef(null);
 
@@ -2653,8 +2654,15 @@
       return attachTouchDrag(cardRef.current, t.id);
     }, [t.id]);
 
+    const handlePointerDownCapture = function (e) {
+      // Native desktop dragstart may retarget to the draggable card even when
+      // the pointer began on a descendant control. Capture the original
+      // pointer target before the browser starts its drag sequence.
+      pointerOriginIsNoDragRef.current = isNoDragOrigin(e.target);
+    };
+
     const handleDragStart = function (e) {
-      if (isNoDragOrigin(e.target)) {
+      if (pointerOriginIsNoDragRef.current || isNoDragOrigin(e.target)) {
         e.preventDefault();
         return;
       }
@@ -2718,6 +2726,7 @@
       role: "button",
       "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
       onDragStart: handleDragStart,
+      onPointerDownCapture: handlePointerDownCapture,
       onClick: handleClick,
       onKeyDown: handleKeyDown,
     },
