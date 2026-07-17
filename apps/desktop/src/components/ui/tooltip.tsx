@@ -59,7 +59,7 @@ function TooltipContent({
             this inline decoration's geometry, so Radix measures a zero-size chip
             and parks an empty rectangle in the corner (#62022). Force any direct
             child inline-flex so every call site stays safe. */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
+        <span className="box-decoration-clone inline bg-background px-1.5 py-1 text-[11px] font-bold leading-normal text-foreground shadow-[0_1px_4px_rgba(0,0,0,0.15)] [font-family:Arial,sans-serif] [&>*]:!inline-flex">
           {children}
         </span>
       </TooltipPrimitive.Content>
