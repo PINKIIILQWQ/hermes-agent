@@ -176,13 +176,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
           id: 'pview:keys',
           label: t.settings.nav.providerApiKeys,
           onSelect: () => openProviderView('keys')
-        },
-        {
-          active: activeView === 'providers' && providerView === 'custom-endpoints',
-          icon: Globe,
-          id: 'pview:custom-endpoints',
-          label: t.settings.nav.providerCustomEndpoints,
-          onSelect: () => openProviderView('custom-endpoints')
         }
       ],
       gapBefore: true,
@@ -288,7 +281,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <OverlaySplitLayout>
         <OverlayNav footer={navFooter} groups={navGroups} />
 
-        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
+        <OverlayMain className="px-0 pb-0">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
@@ -305,13 +298,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
               onMainModelChanged={onMainModelChanged}
             />
           ) : activeView === 'providers' ? (
-            <ProvidersSettings
-              onClose={onClose}
-              onConfigSaved={onConfigSaved}
-              onMainModelChanged={onMainModelChanged}
-              onViewChange={setProviderView}
-              view={providerView}
-            />
+            <ProvidersSettings onClose={onClose} onViewChange={setProviderView} view={providerView} />
           ) : activeView === 'keys' ? (
             <KeysSettings view={keysView} />
           ) : activeView === 'notifications' ? (

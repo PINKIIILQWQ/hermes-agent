@@ -375,15 +375,7 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
   }
 
   const idx = Math.max(0, panes.indexOf(group!.active ?? ''))
-  const nextId = panes[(idx + direction + panes.length) % panes.length]
-  activateTreePane(group!.id, nextId)
-
-  // Cycling onto a session/main tab must surface the name card — a zone that
-  // was double-tap-hidden stays headerless otherwise ("the one that cycles
-  // never gets it").
-  if (nextId === 'workspace' || nextId.startsWith('session-tile:')) {
-    setTreeGroupHeaderHidden(group!.id, false)
-  }
+  activateTreePane(group!.id, panes[(idx + direction + panes.length) % panes.length])
 
   return true
 }

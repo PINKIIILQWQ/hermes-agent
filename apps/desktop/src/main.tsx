@@ -17,11 +17,7 @@ import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
 
-// The perf probe ships in dev, and in a production build ONLY when explicitly
-// opted in (VITE_PERF_PROBE=1) — this lets the perf harness measure a real,
-// minified production renderer for representative absolute numbers. Normal
-// `npm run build` leaves the flag unset, so the probe never reaches users.
-if (import.meta.env.MODE !== 'production' || import.meta.env.VITE_PERF_PROBE === '1') {
+if (import.meta.env.MODE !== 'production') {
   import('./app/chat/perf-probe')
 }
 

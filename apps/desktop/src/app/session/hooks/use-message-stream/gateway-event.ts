@@ -46,7 +46,7 @@ import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent }
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
-import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
+import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
@@ -554,7 +554,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // (coding rail, review pane, file tree) to refresh. Event-driven, not
         // polled: fires exactly when the agent touches the tree.
         if (payload && toolMayMutateFiles(payload)) {
-          notifyWorkspaceChanged(toolChangedPath(payload))
+          notifyWorkspaceChanged()
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
         if (sessionId && payload && !sessionInterrupted(sessionId)) {

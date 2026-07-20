@@ -433,13 +433,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     lastGatewayProfileRef.current = activeGatewayProfile
-    // Force: the new profile has its own defaults, so reseed the selector even
-    // if the composer already shows values from the previous profile. Both
-    // refreshes carry an intent token so a picker click made in flight wins.
+    // Force: the new profile has its own default, so reseed even if the
+    // composer already shows the previous profile's model.
     void refreshCurrentModel(true)
-    void refreshHermesConfig(true)
     void refreshActiveProfile()
-  }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
+  }, [activeGatewayProfile, refreshCurrentModel])
 
   // New session anchored to a workspace (sidebar "+" on a project/worktree).
   // Seeds cwd + branch from the clicked workspace; an explicit worktree path
@@ -918,7 +916,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               setCurrentProvider(provider)
               setCurrentModel(model)
               setCurrentModelSource('default')
-              updateModelOptionsCache($activeSessionId.get(), provider, model, true)
+              updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}

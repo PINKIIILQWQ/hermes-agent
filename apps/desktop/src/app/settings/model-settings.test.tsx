@@ -1,6 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -89,13 +88,9 @@ async function renderModelSettings() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
-    // The aux-task deep-link highlight reads useSearchParams, so the page
-    // needs a router context in tests (the app provides HashRouter at root).
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <ModelSettings />
-      </QueryClientProvider>
-    </MemoryRouter>
+    <QueryClientProvider client={client}>
+      <ModelSettings />
+    </QueryClientProvider>
   )
 }
 
