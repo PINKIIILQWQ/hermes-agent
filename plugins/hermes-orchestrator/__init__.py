@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 # ── constants ───────────────────────────────────────────────────────────────
 
-_PLUGIN_NAME = "hermes-orchestrator"
+_PLUGIN_NAME = "profile-orchestrator"
 
 # Storage: $HERMES_ORCHESTRATOR_HOME or $HERMES_HOME/orchestrator or ~/.hermes/orchestrator
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
@@ -124,7 +124,9 @@ def _new_run(task: str, opts: Dict[str, Any]) -> Dict[str, Any]:
         "route": route,
         "profile": profile,
         "project": str(opts.get("project") or ""),
+        "skills": opts.get("skills"),
         "task": _redact(task),
+        "timeout": opts.get("timeout", 21600),
         "created_at": now,
         "started_at": now,
         "ended_at": None,
@@ -171,6 +173,12 @@ def _spawn_runner(run: Dict[str, Any]) -> Dict[str, Any]:
     env["HERMES_ORCHESTRATOR_HOME"] = str(_STORE_DIR)
     env["ORCHESTRATOR_RUN_ID"] = run["run_id"]
     env["HERMES_PROFILE"] = run["profile"]
+    skills = run.get("skills")
+    if skills:
+        env["ORCHESTRATOR_SKILLS"] = ",".join(skills)
+    timeout = run.get("timeout", 21600)
+    if timeout:
+        env["ORCHESTRATOR_TIMEOUT"] = str(timeout)
 
     proc = subprocess.Popen(
         [sys.executable, str(runner_script)],
@@ -185,15 +193,17 @@ def _spawn_runner(run: Dict[str, Any]) -> Dict[str, Any]:
 # ── tool schemas ────────────────────────────────────────────────────────────
 
 DISPATCH_SCHEMA = {
-    "name": "agent_dispatch",
+    "name": "profile_dispatch",
     "description": "Route a task to a specialist Hermes profile. The orchestrator spawns the target profile as a subprocess and surfaces the result on the next turn.",
     "parameters": {
         "type": "object",
         "properties": {
             "task": {"type": "string", "description": "Task description for the target profile"},
             "project": {"type": "string", "description": "Optional project name for grouping"},
-            "route": {"type": "string", "enum": ["research", "code", "review", "fast", "sink", "notify", "custom"], "description": "Task category"},
+            "route": {"type": "string", "enum": ["research", "code", "review", "fast", "custom"], "description": "Task category"},
             "profile": {"type": "string", "description": "Explicit target profile name"},
+            "skills": {"type": "array", "items": {"type": "string"}, "description": "Optional skill names to load into the child profile"},
+            "timeout_seconds": {"type": "integer", "description": "Optional per-task timeout in seconds (default 21600)"},
             "approve": {"type": "boolean", "description": "Set true to pre-approve high-risk operations"},
         },
         "required": ["task"],
@@ -201,7 +211,7 @@ DISPATCH_SCHEMA = {
 }
 
 RUN_SCHEMA = {
-    "name": "agent_run",
+    "name": "profile_run",
     "description": "Inspect the latest or a specific orchestrator run.",
     "parameters": {
         "type": "object",
@@ -212,7 +222,7 @@ RUN_SCHEMA = {
 }
 
 RUNS_SCHEMA = {
-    "name": "agent_runs",
+    "name": "profile_runs",
     "description": "List recent orchestrator runs, optionally filtered by status.",
     "parameters": {
         "type": "object",
@@ -223,7 +233,7 @@ RUNS_SCHEMA = {
 }
 
 RUNWATCH_SCHEMA = {
-    "name": "agent_runwatch",
+    "name": "profile_runwatch",
     "description": "Wait briefly for an orchestrator run to complete.",
     "parameters": {
         "type": "object",
@@ -235,7 +245,7 @@ RUNWATCH_SCHEMA = {
 }
 
 DISPATCH_MANY_SCHEMA = {
-    "name": "agent_dispatch_many",
+    "name": "profile_dispatch_many",
     "description": "Route multiple independent tasks to specialist profiles in parallel.",
     "parameters": {
         "type": "object",
@@ -260,7 +270,7 @@ DISPATCH_MANY_SCHEMA = {
 }
 
 FOLLOWUP_SCHEMA = {
-    "name": "agent_followup",
+    "name": "profile_followup",
     "description": "Create an additive child task linked to an existing run.",
     "parameters": {
         "type": "object",
@@ -270,25 +280,15 @@ FOLLOWUP_SCHEMA = {
             "project": {"type": "string"},
             "route": {"type": "string"},
             "profile": {"type": "string"},
+            "skills": {"type": "array", "items": {"type": "string"}, "description": "Optional skill names to load into the child profile"},
             "approve": {"type": "boolean"},
         },
         "required": ["task"],
     },
 }
 
-SINK_SCHEMA = {
-    "name": "agent_sink",
-    "description": "Archive a completed run as a local journal entry.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "run_id": {"type": "string", "description": "Run ID to sink"},
-        },
-    },
-}
-
 APPROVE_SCHEMA = {
-    "name": "agent_runapprove",
+    "name": "profile_approve",
     "description": "Approve a held high-risk orchestrator run.",
     "parameters": {
         "type": "object",
@@ -299,7 +299,7 @@ APPROVE_SCHEMA = {
 }
 
 CANCEL_SCHEMA = {
-    "name": "agent_cancel",
+    "name": "profile_cancel",
     "description": "Cancel a running orchestrator run.",
     "parameters": {
         "type": "object",
@@ -310,7 +310,7 @@ CANCEL_SCHEMA = {
 }
 
 CHECK_PENDING_SCHEMA = {
-    "name": "agent_check_pending",
+    "name": "profile_check_pending",
     "description": "Read any orchestrator run completions not yet delivered as conversation messages.",
     "parameters": {"type": "object", "properties": {}},
 }
@@ -352,6 +352,10 @@ def _tool_dispatch(args: Dict[str, Any], **_: Any) -> str:
         opts["route"] = str(args["route"])
     if args.get("profile"):
         opts["profile"] = str(args["profile"])
+    if args.get("skills"):
+        opts["skills"] = list(args["skills"])
+    if args.get("timeout_seconds"):
+        opts["timeout"] = int(args["timeout_seconds"])
     if args.get("approve"):
         opts["preapproved"] = True
     run = _dispatch_run(task, opts)
@@ -461,17 +465,6 @@ def _tool_followup(args: Dict[str, Any], **_: Any) -> str:
     parent["child_run_ids"].append(run["run_id"])
     _save_run(parent)
     return f"Follow-up {run['run_id']} linked to parent {parent['run_id']}."
-
-
-def _tool_sink(args: Dict[str, Any], **_: Any) -> str:
-    run_id = str(args.get("run_id") or "").strip()
-    if not run_id:
-        all_runs = _all_runs()
-        completed = [r for r in all_runs if r.get("status") == "completed"]
-        if not completed:
-            return "No completed runs to sink."
-        run_id = completed[0]["run_id"]
-    return f"sink not yet implemented for run {run_id}"
 
 
 def _tool_runapprove(args: Dict[str, Any], **_: Any) -> str:
@@ -644,31 +637,30 @@ def _start_entry_watcher(ctx) -> None:
 
     def _loop():
         while True:
-            try:
-                _PENDING_DIR.mkdir(parents=True, exist_ok=True)
-                for path in sorted(_PENDING_DIR.glob("run_*.json"), key=lambda p: p.stat().st_mtime):
+            _PENDING_DIR.mkdir(parents=True, exist_ok=True)
+            for path in sorted(_PENDING_DIR.glob("run_*.json"), key=lambda p: p.stat().st_mtime):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    log.warning("watcher: failed to read pending %s: %s", path.name, exc)
+                    continue
+                run_id = data.get("run_id")
+                if not run_id:
+                    continue
+                run = _load_run(run_id)
+                if not run or run.get("status") in ("running",):
+                    continue
+                if run.get("status") in ("completed", "failed", "cancelled"):
                     try:
-                        data = json.loads(path.read_text(encoding="utf-8"))
-                    except Exception:
-                        continue
-                    run_id = data.get("run_id")
-                    if not run_id:
-                        continue
-                    run = _load_run(run_id)
-                    if not run or run.get("status") in ("running",):
-                        continue
-                    if run.get("status") in ("completed", "failed"):
-                        try:
-                            ctx.inject_message(_completion_message(run), role="system")
-                            _clean_pending_notification(run_id)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+                        ctx.inject_message(_completion_message(run), role="user")
+                        _clean_pending_notification(run_id)
+                    except Exception as exc:
+                        log.warning("watcher: inject_message failed for %s: %s", run_id, exc)
             time.sleep(5)
 
     thread = threading.Thread(target=_loop, name="orchestrator-entry-watcher", daemon=True)
     thread.start()
+    log.info("orchestrator entry watcher started (5s poll)")
 
 
 # ── register ────────────────────────────────────────────────────────────────
@@ -677,16 +669,15 @@ def register(ctx) -> None:
     _start_entry_watcher(ctx)
 
     tools = [
-        ("agent_dispatch", DISPATCH_SCHEMA, _tool_dispatch, "🧭"),
-        ("agent_dispatch_many", DISPATCH_MANY_SCHEMA, _tool_dispatch_many, "🧭"),
-        ("agent_runs", RUNS_SCHEMA, _tool_runs, "📋"),
-        ("agent_run", RUN_SCHEMA, _tool_run, "🔎"),
-        ("agent_runwatch", RUNWATCH_SCHEMA, _tool_runwatch, "⏳"),
-        ("agent_followup", FOLLOWUP_SCHEMA, _tool_followup, "➕"),
-        ("agent_sink", SINK_SCHEMA, _tool_sink, "📚"),
-        ("agent_runapprove", APPROVE_SCHEMA, _tool_runapprove, "✅"),
-        ("agent_cancel", CANCEL_SCHEMA, _tool_cancel, "🛑"),
-        ("agent_check_pending", CHECK_PENDING_SCHEMA, _tool_check_pending, "📬"),
+        ("profile_dispatch", DISPATCH_SCHEMA, _tool_dispatch, "🧭"),
+        ("profile_dispatch_many", DISPATCH_MANY_SCHEMA, _tool_dispatch_many, "🧭"),
+        ("profile_runs", RUNS_SCHEMA, _tool_runs, "📋"),
+        ("profile_run", RUN_SCHEMA, _tool_run, "🔎"),
+        ("profile_runwatch", RUNWATCH_SCHEMA, _tool_runwatch, "⏳"),
+        ("profile_followup", FOLLOWUP_SCHEMA, _tool_followup, "➕"),
+        ("profile_approve", APPROVE_SCHEMA, _tool_runapprove, "✅"),
+        ("profile_cancel", CANCEL_SCHEMA, _tool_cancel, "🛑"),
+        ("profile_check_pending", CHECK_PENDING_SCHEMA, _tool_check_pending, "📬"),
     ]
     for name, schema, handler, emoji in tools:
         ctx.register_tool(

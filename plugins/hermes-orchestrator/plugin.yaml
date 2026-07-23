@@ -1,0 +1,4 @@
+name: hermes-orchestrator
+version: "0.8.0"
+description: Route tasks to specialist Hermes profiles. Supports profile dispatch, run ledger, approval gate, follow-up, and real-time result backflow.
+author: pink + Nous Research

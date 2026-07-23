@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -26,6 +25,9 @@ log = logging.getLogger(__name__)
 STORE_DIR = Path(os.environ.get("HERMES_ORCHESTRATOR_HOME") or Path.home() / ".hermes" / "orchestrator")
 RUN_ID = os.environ.get("ORCHESTRATOR_RUN_ID", "")
 PROFILE = os.environ.get("HERMES_PROFILE", "default")
+
+TIMEOUT = int(os.environ.get("ORCHESTRATOR_TIMEOUT", "21600"))
+SKILLS = os.environ.get("ORCHESTRATOR_SKILLS", "")
 
 
 def _now() -> str:
@@ -108,19 +110,19 @@ def _write_pending_notification(run: Dict[str, Any]) -> None:
 
 def _run_hermes_task(task: str) -> str:
     """Spawn the target Hermes profile and return its output."""
-    task_quoted = shlex.quote(task)
     cmd = [
         sys.executable, "-m", "hermes_cli.main",
         "--profile", PROFILE,
         "chat", "-q", task,
-        "--source", "hermes-orchestrator",
-        "-t", "web,browser,terminal,file,code_execution,todo,clarify",
+        "--source", "profile-orchestrator",
     ]
+    if SKILLS:
+        cmd.extend(["--skills", SKILLS])
     proc = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        timeout=60 * 60 * 6,  # 6-hour max
+        timeout=TIMEOUT,
     )
     return proc.stdout or ""
 
