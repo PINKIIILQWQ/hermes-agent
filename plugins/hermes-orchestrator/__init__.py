@@ -1,7 +1,7 @@
 """
 hermes-orchestrator — route tasks to specialist Hermes profiles.
 
-Provides ``agent_dispatch`` / ``agent_run`` / ``agent_check_pending`` etc. as
+Provides ``profile_dispatch`` / ``profile_run`` / ``profile_check_pending`` etc. as
 Hermes tools.  The entry profile dispatches a task, the orchestrator spawns
 the target profile as a subprocess, and the result is surfaced back on the
 next conversation turn.
@@ -127,6 +127,8 @@ def _new_run(task: str, opts: Dict[str, Any]) -> Dict[str, Any]:
         "skills": opts.get("skills"),
         "task": _redact(task),
         "timeout": opts.get("timeout", 21600),
+        "origin_ui_session_id": opts.get("origin_ui_session_id") or "",
+        "session_key": opts.get("session_key") or "",
         "created_at": now,
         "started_at": now,
         "ended_at": None,
@@ -341,55 +343,6 @@ def _format_run_brief(run: Dict[str, Any]) -> str:
     return " ".join(p for p in parts if p)
 
 
-def _tool_dispatch(args: Dict[str, Any], **_: Any) -> str:
-    task = str(args.get("task") or "").strip()
-    if not task:
-        return "agent_dispatch requires a task."
-    opts: Dict[str, Any] = {}
-    if args.get("project"):
-        opts["project"] = str(args["project"])
-    if args.get("route"):
-        opts["route"] = str(args["route"])
-    if args.get("profile"):
-        opts["profile"] = str(args["profile"])
-    if args.get("skills"):
-        opts["skills"] = list(args["skills"])
-    if args.get("timeout_seconds"):
-        opts["timeout"] = int(args["timeout_seconds"])
-    if args.get("approve"):
-        opts["preapproved"] = True
-    run = _dispatch_run(task, opts)
-    status = run.get("status", "?")
-    msg = f"Dispatched {run['run_id']} → {run['profile']} ({run['route']})."
-    if status == "waiting_approval":
-        msg = f"Created {run['run_id']} but held for approval: {', '.join(run.get('risk_reasons') or [])}"
-    return _dispatch_payload([run], msg)
-
-
-def _tool_dispatch_many(args: Dict[str, Any], **_: Any) -> str:
-    raw = args.get("tasks") or []
-    if not raw:
-        return "agent_dispatch_many requires a non-empty tasks array."
-    runs = []
-    for item in raw:
-        task = str(item.get("task") or "").strip()
-        if not task:
-            continue
-        opts: Dict[str, Any] = {}
-        if item.get("project"):
-            opts["project"] = str(item["project"])
-        if item.get("route"):
-            opts["route"] = str(item["route"])
-        if item.get("profile"):
-            opts["profile"] = str(item["profile"])
-        if item.get("approve"):
-            opts["preapproved"] = True
-        runs.append(_dispatch_run(task, opts))
-    if not runs:
-        return "agent_dispatch_many did not receive any valid task."
-    return _dispatch_payload(runs, f"Dispatched {len(runs)} task(s).")
-
-
 def _tool_run(args: Dict[str, Any], **_: Any) -> str:
     run_id = str(args.get("run_id") or "").strip()
     if not run_id:
@@ -428,7 +381,7 @@ def _tool_runwatch(args: Dict[str, Any], **_: Any) -> str:
     seconds = int(args.get("seconds") or 30)
     seconds = max(1, min(300, seconds))
     if not run_id:
-        return "agent_runwatch requires a run_id."
+        return "profile_runwatch requires a run_id."
     run = _load_run(run_id)
     if not run:
         return f"Run {run_id} not found."
@@ -439,32 +392,6 @@ def _tool_runwatch(args: Dict[str, Any], **_: Any) -> str:
             return _format_run_brief(run)
         time.sleep(2)
     return f"Still running after {seconds}s.\n{_format_run_brief(run)}"
-
-
-def _tool_followup(args: Dict[str, Any], **_: Any) -> str:
-    task = str(args.get("task") or "").strip()
-    if not task:
-        return "agent_followup requires a task."
-    parent_id = str(args.get("run_id") or "").strip()
-    parent = _load_run(parent_id) if parent_id else None
-    if not parent:
-        return f"Parent run {parent_id} not found."
-    opts: Dict[str, Any] = {
-        "parent_run_id": parent["run_id"],
-        "root_run_id": parent.get("root_run_id") or parent["run_id"],
-        "source_run_id": parent["run_id"],
-        "route": args.get("route") or parent.get("route", "research"),
-        "profile": args.get("profile") or parent.get("profile", ""),
-    }
-    if args.get("project"):
-        opts["project"] = str(args["project"])
-    if args.get("approve"):
-        opts["preapproved"] = True
-    run = _dispatch_run(task, opts)
-    parent["child_run_ids"] = parent.get("child_run_ids") or []
-    parent["child_run_ids"].append(run["run_id"])
-    _save_run(parent)
-    return f"Follow-up {run['run_id']} linked to parent {parent['run_id']}."
 
 
 def _tool_runapprove(args: Dict[str, Any], **_: Any) -> str:
@@ -668,13 +595,94 @@ def _start_entry_watcher(ctx) -> None:
 def register(ctx) -> None:
     _start_entry_watcher(ctx)
 
+    def _session_opts(args: dict) -> dict:
+        """Return common opts with session context captured."""
+        opts: Dict[str, Any] = {}
+        if args.get("project"):
+            opts["project"] = str(args["project"])
+        if args.get("route"):
+            opts["route"] = str(args["route"])
+        if args.get("profile"):
+            opts["profile"] = str(args["profile"])
+        if args.get("skills"):
+            opts["skills"] = list(args["skills"])
+        if args.get("timeout_seconds"):
+            opts["timeout"] = int(args["timeout_seconds"])
+        if args.get("approve"):
+            opts["preapproved"] = True
+        # Capture session context for notification routing
+        sk = getattr(ctx, "session_key", None) or ""
+        if sk:
+            opts["session_key"] = str(sk)
+        ous = getattr(ctx, "origin_ui_session_id", None) or ""
+        if ous:
+            opts["origin_ui_session_id"] = str(ous)
+        return opts
+
+    def _mk_dispatch(args, **_):
+        task = str(args.get("task") or "").strip()
+        if not task:
+            return "profile_dispatch requires a task."
+        opts = _session_opts(args)
+        run = _dispatch_run(task, opts)
+        status = run.get("status", "?")
+        msg = f"Dispatched {run['run_id']} → {run['profile']} ({run['route']})."
+        if status == "waiting_approval":
+            msg = f"Created {run['run_id']} but held for approval: {', '.join(run.get('risk_reasons') or [])}"
+        return _dispatch_payload([run], msg)
+
+    def _mk_dispatch_many(args, **_):
+        raw = args.get("tasks") or []
+        if not raw:
+            return "profile_dispatch_many requires a non-empty tasks array."
+        runs = []
+        for item in raw:
+            task = str(item.get("task") or "").strip()
+            if not task:
+                continue
+            opts = _session_opts(item)
+            runs.append(_dispatch_run(task, opts))
+        if not runs:
+            return "profile_dispatch_many did not receive any valid task."
+        return _dispatch_payload(runs, f"Dispatched {len(runs)} task(s).")
+
+    def _mk_followup(args, **_):
+        task = str(args.get("task") or "").strip()
+        if not task:
+            return "profile_followup requires a task."
+        parent_id = str(args.get("run_id") or "").strip()
+        parent = _load_run(parent_id) if parent_id else None
+        if not parent:
+            return f"Parent run {parent_id} not found."
+        opts: Dict[str, Any] = {
+            "parent_run_id": parent["run_id"],
+            "root_run_id": parent.get("root_run_id") or parent["run_id"],
+            "source_run_id": parent["run_id"],
+            "route": args.get("route") or parent.get("route", "research"),
+            "profile": args.get("profile") or parent.get("profile", ""),
+        }
+        # Copy session context from parent if not explicitly set
+        if parent.get("origin_ui_session_id") and not args.get("origin_ui_session_id"):
+            opts["origin_ui_session_id"] = parent["origin_ui_session_id"]
+        if parent.get("session_key") and not args.get("session_key"):
+            opts["session_key"] = parent["session_key"]
+        if args.get("skills"):
+            opts["skills"] = list(args["skills"])
+        if args.get("approve"):
+            opts["preapproved"] = True
+        run = _dispatch_run(task, opts)
+        parent["child_run_ids"] = parent.get("child_run_ids") or []
+        parent["child_run_ids"].append(run["run_id"])
+        _save_run(parent)
+        return f"Follow-up {run['run_id']} linked to parent {parent['run_id']}."
+
     tools = [
-        ("profile_dispatch", DISPATCH_SCHEMA, _tool_dispatch, "🧭"),
-        ("profile_dispatch_many", DISPATCH_MANY_SCHEMA, _tool_dispatch_many, "🧭"),
+        ("profile_dispatch", DISPATCH_SCHEMA, _mk_dispatch, "🧭"),
+        ("profile_dispatch_many", DISPATCH_MANY_SCHEMA, _mk_dispatch_many, "🧭"),
         ("profile_runs", RUNS_SCHEMA, _tool_runs, "📋"),
         ("profile_run", RUN_SCHEMA, _tool_run, "🔎"),
         ("profile_runwatch", RUNWATCH_SCHEMA, _tool_runwatch, "⏳"),
-        ("profile_followup", FOLLOWUP_SCHEMA, _tool_followup, "➕"),
+        ("profile_followup", FOLLOWUP_SCHEMA, _mk_followup, "➕"),
         ("profile_approve", APPROVE_SCHEMA, _tool_runapprove, "✅"),
         ("profile_cancel", CANCEL_SCHEMA, _tool_cancel, "🛑"),
         ("profile_check_pending", CHECK_PENDING_SCHEMA, _tool_check_pending, "📬"),
